@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+**/.venv
+**/__pycache__
+*.pyc
+secrets
+docs
+.fanvue_tokens.json
+*.pem
+node_modules
+.DS_Store
