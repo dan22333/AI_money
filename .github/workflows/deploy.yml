@@ -1,0 +1,50 @@
+name: Deploy
+
+# Deploys ONLY after CI succeeds on main. Never on a red build, never on branches.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    # gate: only when the CI run was green
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write          # for Workload Identity Federation (no JSON keys)
+    env:
+      PROJECT: ${{ secrets.GCP_PROJECT }}
+      REGION: ${{ secrets.GCP_REGION }}        # e.g. us-central1
+      REPO: jenny                               # Artifact Registry repo
+      SERVICE: jenny-agent                      # Cloud Run service
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Auth to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build & push image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${SERVICE}:${GITHUB_SHA::7}"
+          gcloud builds submit --tag "$IMAGE" --project "$PROJECT" -f agent/Dockerfile .
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE" \
+            --project "$PROJECT" --region "$REGION" \
+            --platform managed --allow-unauthenticated \
+            --set-secrets "OPENROUTER_API_KEY=openrouter-api-key:latest,\
+OAUTH_CLIENT_SECRET=fanvue-client-secret:latest,\
+FANVUE_WEBHOOK_SECRET=fanvue-webhook-secret:latest,\
+SIM_SECRET=sim-secret:latest" \
+            --set-env-vars "USE_FIRESTORE=true,GCP_PROJECT=${PROJECT},OPENROUTER_MODEL=x-ai/grok-4.3,MODE_MODEL=mistralai/mistral-nemo"
