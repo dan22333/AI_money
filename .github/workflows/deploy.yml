@@ -30,15 +30,19 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      # Build in the runner with Docker (runners have it) and push straight to
+      # Artifact Registry. Avoids Cloud Build + its default-logs-bucket permission
+      # issue, and is faster. The deployer SA has artifactregistry.writer.
       - name: Build & push image
         run: |
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${SERVICE}:${GITHUB_SHA::7}"
-          # --suppress-logs: the deployer SA isn't a project Viewer, so gcloud can't
-          # stream the default-bucket build logs (would exit 1 even on a successful build).
-          gcloud builds submit --tag "$IMAGE" --project "$PROJECT" --suppress-logs .
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
-      - name: Deploy to Cloud Run
+      # 1) Deploy the new revision with NO traffic + a preview tag.
+      - name: Deploy canary (no traffic)
         run: |
           SECRETS="OPENROUTER_API_KEY=openrouter-api-key:latest,OAUTH_CLIENT_SECRET=fanvue-client-secret:latest,FANVUE_WEBHOOK_SECRET=fanvue-webhook-secret:latest,SIM_SECRET=sim-secret:latest"
           ENVS="USE_FIRESTORE=true,GCP_PROJECT=${PROJECT},OPENROUTER_MODEL=x-ai/grok-4.3,MODE_MODEL=mistralai/mistral-nemo"
@@ -46,5 +50,26 @@ jobs:
             --image "$IMAGE" \
             --project "$PROJECT" --region "$REGION" \
             --platform managed --allow-unauthenticated \
+            --service-account "jenny-runtime@${PROJECT}.iam.gserviceaccount.com" \
             --set-secrets "$SECRETS" \
-            --set-env-vars "$ENVS"
+            --set-env-vars "$ENVS" \
+            --no-traffic --tag candidate
+
+      # 2) REAL-MODEL smoke test against the candidate — gates the cutover.
+      - name: Smoke test candidate (real model)
+        run: |
+          CAND_URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
+            --format=json | jq -r '.status.traffic[] | select(.tag=="candidate") | .url')
+          echo "candidate URL: $CAND_URL"
+          curl -fsS "$CAND_URL/healthz" >/dev/null
+          SIM=$(gcloud secrets versions access latest --secret=sim-secret --project "$PROJECT")
+          REPLY=$(curl -fsS -X POST "$CAND_URL/simulate" \
+            -H "x-sim-secret: $SIM" -H "content-type: application/json" \
+            -d '{"text":"hey jenny, you around?"}' | jq -r '.reply // empty')
+          echo "Jenny replied: $REPLY"
+          test -n "$REPLY"   # fail (keep old revision live) if the real model produced no reply
+
+      # 3) Only now shift 100% of traffic to the verified revision.
+      - name: Promote candidate
+        run: |
+          gcloud run services update-traffic "$SERVICE" --project "$PROJECT" --region "$REGION" --to-latest

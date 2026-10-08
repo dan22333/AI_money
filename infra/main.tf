@@ -1,7 +1,7 @@
 data "google_project" "p" {}
 
 locals {
-  runtime_sa = "${data.google_project.p.number}-compute@developer.gserviceaccount.com"
+  jenny_secrets = ["openrouter-api-key", "fanvue-client-secret", "fanvue-webhook-secret", "sim-secret"]
 
   apis = [
     "run.googleapis.com", "cloudbuild.googleapis.com", "artifactregistry.googleapis.com",
@@ -14,8 +14,6 @@ locals {
     "roles/run.admin", "roles/cloudbuild.builds.editor", "roles/artifactregistry.writer",
     "roles/iam.serviceAccountUser", "roles/storage.admin", "roles/serviceusage.serviceUsageConsumer",
   ]
-
-  runtime_roles = ["roles/secretmanager.secretAccessor", "roles/datastore.user"]
 }
 
 # Enable APIs (safe on a shared project: never disabled on destroy).
@@ -55,11 +53,33 @@ resource "google_project_iam_member" "deployer" {
   member   = "serviceAccount:${google_service_account.deployer.email}"
 }
 
-resource "google_project_iam_member" "runtime" {
-  for_each = toset(local.runtime_roles)
-  project  = var.project
-  role     = each.value
-  member   = "serviceAccount:${local.runtime_sa}"
+# Dedicated least-privilege runtime identity for the Cloud Run service.
+resource "google_service_account" "runtime" {
+  account_id   = "jenny-runtime"
+  display_name = "Jenny Cloud Run runtime"
+}
+
+# Firestore access (single project DB).
+resource "google_project_iam_member" "runtime_datastore" {
+  project = var.project
+  role    = "roles/datastore.user"
+  member  = "serviceAccount:${google_service_account.runtime.email}"
+}
+
+# Secret access scoped to ONLY Jenny's secrets (resource-level, not project-wide).
+resource "google_secret_manager_secret_iam_member" "runtime_secrets" {
+  for_each  = toset(local.jenny_secrets)
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.runtime.email}"
+}
+
+# The deploy pipeline reads sim-secret to run the real-model smoke test against
+# the canary revision before shifting traffic.
+resource "google_secret_manager_secret_iam_member" "deployer_sim_secret" {
+  secret_id = "sim-secret"
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.deployer.email}"
 }
 
 resource "google_iam_workload_identity_pool" "github" {
