@@ -26,7 +26,7 @@ SCOPES    = os.environ.get("OAUTH_SCOPES", "openid offline_access read:self read
 TOKENS_FILE = "secrets/.fanvue_tokens.json"
 
 
-def load_env(path=".env.local"):
+def load_env(path="secrets/.env"):
     if not os.path.exists(path):
         return
     for line in open(path):

@@ -1,6 +1,6 @@
 # Jenny Agent
 
-Autonomous AI chat agent that plays **Jenny Carter** (`../persona.md`) on Fanvue.
+Autonomous AI chat agent that plays **Jenny Carter** (`persona.md`) on Fanvue.
 LangGraph brain · OpenRouter models (Grok 4.3 voice, Mistral-Nemo mode classifier) ·
 mem0 memory · deterministic selling · Firestore + (Phase 2) BigQuery.
 

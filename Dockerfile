@@ -9,7 +9,7 @@ COPY agent/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY agent/ .
-COPY persona.md /app/persona.md
+# persona.md now lives in agent/, so it's already copied above.
 ENV PERSONA_PATH=/app/persona.md
 
 ENV PORT=8080

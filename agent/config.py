@@ -41,7 +41,7 @@ class Settings:
     SUMMARIZE_AFTER = int(os.environ.get("SUMMARIZE_AFTER", "20"))
 
     # --- Persona ---
-    PERSONA_PATH = os.environ.get("PERSONA_PATH", str(REPO_ROOT / "persona.md"))
+    PERSONA_PATH = os.environ.get("PERSONA_PATH", str(Path(__file__).resolve().parent / "persona.md"))
 
     # --- Memory (mem0) ---
     # If MEM0_API_KEY is set -> hosted mem0 platform. Else local/fallback.
