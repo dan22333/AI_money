@@ -33,7 +33,9 @@ jobs:
       - name: Build & push image
         run: |
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${SERVICE}:${GITHUB_SHA::7}"
-          gcloud builds submit --tag "$IMAGE" --project "$PROJECT" .
+          # --suppress-logs: the deployer SA isn't a project Viewer, so gcloud can't
+          # stream the default-bucket build logs (would exit 1 even on a successful build).
+          gcloud builds submit --tag "$IMAGE" --project "$PROJECT" --suppress-logs .
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Deploy to Cloud Run
