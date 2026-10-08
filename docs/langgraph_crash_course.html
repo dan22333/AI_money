@@ -1,0 +1,458 @@
+<title>LangGraph, wired through the Jenny agent</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --bg:#e9edf1; --surface:#f7f9fb; --surface-2:#dfe5ec; --code-bg:#eef2f6;
+  --ink:#131c26; --ink-soft:#4a5765; --ink-faint:#74828f; --line:#cad2db;
+  --flow:#0c8d80; --flow-bright:#10a99a; --state:#b56f1f; --state-soft:#e3b877;
+  --decision:#475569; --good:#1f9d57; --crit:#c4453b;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --maxw:70ch; --wide:1060px;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0c131b; --surface:#131d28; --surface-2:#1b2735; --code-bg:#101a24;
+    --ink:#e7eef4; --ink-soft:#9fadbb; --ink-faint:#6b7a89; --line:#263340;
+    --flow:#2dd4bf; --flow-bright:#5ee7d6; --state:#e0a44a; --state-soft:#8a6327;
+    --decision:#94a3b8; --good:#34d17f; --crit:#ef6a60;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#e9edf1; --surface:#f7f9fb; --surface-2:#dfe5ec; --code-bg:#eef2f6;
+  --ink:#131c26; --ink-soft:#4a5765; --ink-faint:#74828f; --line:#cad2db;
+  --flow:#0c8d80; --flow-bright:#10a99a; --state:#b56f1f; --state-soft:#e3b877;
+  --decision:#475569; --good:#1f9d57; --crit:#c4453b;
+}
+:root[data-theme="dark"]{
+  --bg:#0c131b; --surface:#131d28; --surface-2:#1b2735; --code-bg:#101a24;
+  --ink:#e7eef4; --ink-soft:#9fadbb; --ink-faint:#6b7a89; --line:#263340;
+  --flow:#2dd4bf; --flow-bright:#5ee7d6; --state:#e0a44a; --state-soft:#8a6327;
+  --decision:#94a3b8; --good:#34d17f; --crit:#ef6a60;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+  line-height:1.62;font-size:17px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:var(--wide);margin:0 auto;padding:0 24px}
+.col{max-width:var(--maxw);margin-inline:auto}
+h1,h2,h3{text-wrap:balance;line-height:1.15}
+p{color:var(--ink-soft)}
+a{color:var(--flow)}
+code{font-family:var(--mono);font-size:.86em;background:var(--code-bg);
+  padding:.1em .38em;border-radius:5px;color:var(--ink)}
+.eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--flow);font-weight:600}
+
+/* hero */
+header{border-bottom:1px solid var(--line);padding:76px 0 52px;position:relative;overflow:hidden}
+header .wrap{position:relative;z-index:1}
+.hgrid{position:absolute;inset:0;z-index:0;opacity:.5;
+  background-image:linear-gradient(var(--line) 1px,transparent 1px),
+    linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:34px 34px;
+  -webkit-mask-image:radial-gradient(ellipse 80% 70% at 70% 0%,#000,transparent 72%);
+  mask-image:radial-gradient(ellipse 80% 70% at 70% 0%,#000,transparent 72%)}
+h1{font-size:clamp(2.3rem,5.4vw,3.6rem);font-weight:800;letter-spacing:-.022em;margin:.5rem 0 0}
+h1 .hl{color:var(--flow)}
+.lede{font-size:1.2rem;max-width:60ch;margin-top:1.1rem}
+.kicker{font-family:var(--mono);color:var(--ink-faint);font-size:.8rem;margin-top:1.6rem}
+
+/* sections */
+section{padding:56px 0;border-bottom:1px solid var(--line)}
+h2{font-size:1.85rem;font-weight:750;letter-spacing:-.015em;margin:.2rem 0 .1rem}
+.sec-no{font-family:var(--mono);color:var(--flow);font-size:.82rem;font-weight:600}
+h3{font-size:1.18rem;font-weight:700;margin:2rem 0 .4rem}
+.col p{margin:.7rem 0}
+
+/* code */
+pre{background:var(--code-bg);border:1px solid var(--line);border-left:3px solid var(--flow);
+  border-radius:9px;padding:16px 18px;overflow-x:auto;margin:1.1rem 0;
+  font-family:var(--mono);font-size:.82rem;line-height:1.6;color:var(--ink)}
+pre .c{color:var(--ink-faint)}      /* comment */
+pre .k{color:var(--flow-bright);font-weight:600}  /* keyword */
+pre .s{color:var(--state)}          /* string/state */
+pre b{color:var(--ink);font-weight:700}
+
+/* cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin:1.4rem 0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 18px 20px}
+.card .tag{font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;font-weight:600;
+  color:var(--flow);display:block;margin-bottom:.5rem}
+.card h4{margin:0 0 .35rem;font-size:1.02rem}
+.card p{margin:0;font-size:.92rem}
+
+/* diagram */
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;
+  padding:26px;margin:1.6rem 0}
+.diagram-scroll{overflow-x:auto}
+svg.graph{width:100%;min-width:640px;height:auto;display:block}
+.legend{display:flex;flex-wrap:wrap;gap:18px;margin-top:18px;font-family:var(--mono);
+  font-size:.74rem;color:var(--ink-soft)}
+.legend span{display:inline-flex;align-items:center;gap:7px}
+.sw{width:15px;height:15px;border-radius:4px;flex:none}
+
+/* graph svg styling */
+.node{fill:var(--surface-2);stroke:var(--flow);stroke-width:1.6}
+.node.terminal{fill:var(--flow);stroke:var(--flow)}
+.node.tool{stroke-dasharray:5 4}
+.nlabel{font-family:var(--mono);font-size:13px;font-weight:600;fill:var(--ink);
+  text-anchor:middle;dominant-baseline:middle}
+.nlabel.inv{fill:var(--bg)}
+.diamond{fill:var(--surface-2);stroke:var(--decision);stroke-width:1.6}
+.edge{fill:none;stroke:var(--flow);stroke-width:2;marker-end:url(#arrow);
+  stroke-dasharray:7 7;animation:march 1s linear infinite}
+.edge.cond{stroke:var(--decision);stroke-dasharray:3 6}
+.elabel{font-family:var(--mono);font-size:11px;fill:var(--ink-faint)}
+@keyframes march{to{stroke-dashoffset:-14}}
+@media (prefers-reduced-motion:reduce){.edge{animation:none}}
+
+/* callouts */
+.note{border:1px solid var(--line);border-left:3px solid var(--state);background:var(--surface);
+  border-radius:9px;padding:14px 18px;margin:1.3rem 0;font-size:.95rem}
+.note .l{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--state);font-weight:700;display:block;margin-bottom:.3rem}
+.note.key{border-left-color:var(--flow)}
+.note.key .l{color:var(--flow)}
+
+/* two-kinds-of-memory table */
+.mtable{width:100%;border-collapse:collapse;margin:1.3rem 0;font-size:.92rem;overflow-x:auto;display:block}
+.mtable th,.mtable td{text-align:left;padding:11px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+.mtable th{font-family:var(--mono);font-size:.72rem;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:600}
+.mtable td b{color:var(--ink)}
+
+/* steps / glossary */
+.gloss{display:grid;gap:10px;margin:1.3rem 0}
+.gloss div{background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:12px 15px;font-size:.93rem}
+.gloss b{font-family:var(--mono);color:var(--flow);font-size:.86rem}
+
+footer{padding:40px 0 70px;color:var(--ink-faint);font-family:var(--mono);font-size:.78rem}
+footer .col{text-align:center}
+:focus-visible{outline:2px solid var(--flow);outline-offset:3px;border-radius:3px}
+</style>
+
+<header>
+  <div class="hgrid"></div>
+  <div class="wrap">
+    <div class="eyebrow">Crash course · builder's edition</div>
+    <h1>LangGraph, wired through <span class="hl">the Jenny agent</span></h1>
+    <p class="lede">Every concept below — state, nodes, edges, the tool loop, memory,
+      summarization — mapped onto the exact graph now running in <code>agent/graph.py</code>.
+      Learn the framework by reading your own code.</p>
+    <p class="kicker">LangGraph · LangChain core · OpenRouter · mem0 · FastAPI → Cloud Run</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap col">
+    <div class="sec-no">00 — the one idea</div>
+    <h2>It's a graph. State flows through it.</h2>
+    <p>LangChain's older "chains" ran in a straight line. Real agents need to
+      <em>loop</em> ("think → call a tool → think again") and <em>branch</em>
+      ("reply, or send a photo?"). LangGraph models that as a <b>directed graph</b>:</p>
+    <div class="cards">
+      <div class="card"><span class="tag">STATE</span><h4>A shared object</h4>
+        <p>One dict that every step reads and writes. It's the agent's working memory
+          for a single turn — the message list lives here.</p></div>
+      <div class="card"><span class="tag">NODES</span><h4>The steps</h4>
+        <p>Plain Python functions. Each takes the state, does one job, returns the
+          fields it wants to change.</p></div>
+      <div class="card"><span class="tag">EDGES</span><h4>The wiring</h4>
+        <p>Which node runs next. Fixed edges are straight lines; <em>conditional</em>
+          edges are the decisions (the branches and loops).</p></div>
+    </div>
+    <p>You define the graph once, <code>.compile()</code> it, then <code>.invoke()</code>
+      it per message. That's the whole mental model — the rest is detail.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="col">
+      <div class="sec-no">01 — your graph</div>
+      <h2>The Jenny agent, as a diagram</h2>
+      <p>This is <code>agent/graph.py</code> drawn out. A fan message enters at
+        <code>START</code>; Jenny's reply leaves at <code>END</code>. The animated edges
+        show the direction state travels.</p>
+    </div>
+    <div class="panel">
+      <div class="diagram-scroll">
+        <svg class="graph" viewBox="0 0 920 300" role="img"
+             aria-label="Directed graph: START to load_context to agent to a tool-call decision; decision branches up to tools and back to agent, or forward to persist, then END.">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--flow)"></path>
+            </marker>
+            <marker id="arrowd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--decision)"></path>
+            </marker>
+          </defs>
+
+          <!-- edges -->
+          <path class="edge" d="M96 220 H150"></path>
+          <path class="edge" d="M270 220 H340"></path>
+          <path class="edge" d="M460 220 H524"></path>
+          <path class="edge cond" style="marker-end:url(#arrowd)" d="M560 186 V92 H462"></path>
+          <path class="edge cond" style="marker-end:url(#arrowd)" d="M596 220 H645"></path>
+          <path class="edge" d="M398 116 V194"></path>
+
+          <text class="elabel" x="470" y="80">tool call?</text>
+          <text class="elabel" x="606" y="210">no tool calls</text>
+          <text class="elabel" x="406" y="162">loop back</text>
+
+          <!-- nodes -->
+          <circle class="node terminal" cx="70" cy="220" r="26"></circle>
+          <text class="nlabel inv" x="70" y="220">START</text>
+
+          <rect class="node" x="150" y="196" width="120" height="48" rx="10"></rect>
+          <text class="nlabel" x="210" y="221">load_context</text>
+
+          <rect class="node" x="340" y="196" width="120" height="48" rx="10"></rect>
+          <text class="nlabel" x="400" y="221">agent</text>
+
+          <rect class="node tool" x="338" y="68" width="124" height="48" rx="10"></rect>
+          <text class="nlabel" x="400" y="93">tools</text>
+
+          <polygon class="diamond" points="560,186 596,220 560,254 524,220"></polygon>
+
+          <rect class="node" x="645" y="196" width="118" height="48" rx="10"></rect>
+          <text class="nlabel" x="704" y="221">persist</text>
+
+          <circle class="node terminal" cx="850" cy="220" r="26"></circle>
+          <text class="nlabel inv" x="850" y="220">END</text>
+          <path class="edge" d="M763 220 H824"></path>
+        </svg>
+      </div>
+      <div class="legend">
+        <span><span class="sw" style="background:var(--flow)"></span>process node</span>
+        <span><span class="sw" style="background:var(--surface-2);border:1.6px dashed var(--decision)"></span>decision (conditional edge)</span>
+        <span><span class="sw" style="background:var(--surface-2);border:1.6px dashed var(--flow)"></span>tool node</span>
+        <span><span class="sw" style="background:var(--flow);border-radius:50%"></span>terminal</span>
+      </div>
+    </div>
+    <div class="col">
+      <p>Four nodes do the work: <code>load_context</code> (recall), <code>agent</code>
+        (decide + speak), <code>tools</code> (act), <code>persist</code> (save &amp; learn).
+        The diamond is the only branch — "did the model ask to use a tool?" — and it's what
+        turns a straight pipeline into a thinking loop.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap col">
+    <div class="sec-no">02 — state</div>
+    <h2>State: the dict that flows, and <em>reducers</em></h2>
+    <p>State is a typed dict. The subtle part is how updates merge. By default a node's
+      return <b>overwrites</b> a field. But the message list must <b>append</b>, not replace —
+      so you annotate it with a <em>reducer</em>, <code>add_messages</code>:</p>
+<pre><span class="c"># agent/graph.py</span>
+<span class="k">class</span> <b>State</b>(TypedDict):
+    messages: Annotated[list, <b>add_messages</b>]  <span class="c"># reducer → appends &amp; de-dupes by id</span>
+    fan_id:   str                        <span class="c"># plain → each node overwrites</span>
+    incoming: str</pre>
+    <div class="note key"><span class="l">why it matters</span>
+      Without the reducer, the <code>agent</code> node returning one new message would
+      <em>erase</em> the whole conversation. With it, each node just returns its new
+      message and LangGraph appends it. Reducers are how parallel/looping nodes safely
+      share one growing list.</div>
+    <p>A node never mutates state in place — it returns a <em>partial</em> update, and
+      LangGraph applies it through the reducers:</p>
+<pre><span class="k">def</span> <b>agent</b>(state: State) -> dict:
+    <span class="k">return</span> {<span class="s">"messages"</span>: [llm_with_tools.invoke(state[<span class="s">"messages"</span>])]}</pre>
+  </div>
+</section>
+
+<section>
+  <div class="wrap col">
+    <div class="sec-no">03 — nodes</div>
+    <h2>Nodes are just functions</h2>
+    <p>No magic. A node is <code>f(state) -> partial_state</code>. Yours each own one
+      responsibility — which is what makes the agent debuggable:</p>
+    <div class="cards">
+      <div class="card"><span class="tag">load_context</span><h4>Recall</h4>
+        <p>Pulls fan facts from mem0 + recent transcript from the DB, then builds the
+          message list: persona → memory → history → new message.</p></div>
+      <div class="card"><span class="tag">agent</span><h4>Decide &amp; speak</h4>
+        <p>One LLM call with tools bound. Either emits a reply, or emits
+          <em>tool calls</em> asking to act.</p></div>
+      <div class="card"><span class="tag">tools</span><h4>Act</h4>
+        <p>Runs whatever the model asked for — <code>search_vault</code>,
+          <code>send_media</code>, <code>save_fact</code> — and feeds results back.</p></div>
+      <div class="card"><span class="tag">persist</span><h4>Save &amp; learn</h4>
+        <p>Writes the turn to the message DB and hands it to mem0 so Jenny remembers
+          next time.</p></div>
+    </div>
+<pre><span class="c"># a node reads state, returns only what it changes</span>
+<span class="k">def</span> <b>load_context</b>(state: State) -> dict:
+    facts   = memory.recall(state[<span class="s">"fan_id"</span>], state[<span class="s">"incoming"</span>])
+    history = store.recent_messages(state[<span class="s">"fan_id"</span>], limit=12)
+    system  = SystemMessage(content=PERSONA + <span class="s">"\n\nWHAT YOU REMEMBER:\n"</span> + facts)
+    <span class="k">return</span> {<span class="s">"messages"</span>: [system, *history_as_messages, HumanMessage(state[<span class="s">"incoming"</span>])]}</pre>
+  </div>
+</section>
+
+<section>
+  <div class="wrap col">
+    <div class="sec-no">04 — edges &amp; the loop</div>
+    <h2>Edges: fixed wiring vs. decisions</h2>
+    <p>Fixed edges are unconditional ("after A, always B"). The intelligence lives in
+      <b>conditional edges</b> — a router function reads state and returns the <em>name</em>
+      of the next node:</p>
+<pre><span class="c"># fixed edges</span>
+g.add_edge(START, <span class="s">"load_context"</span>)
+g.add_edge(<span class="s">"load_context"</span>, <span class="s">"agent"</span>)
+g.add_edge(<span class="s">"tools"</span>, <span class="s">"agent"</span>)      <span class="c"># ← the loop: after acting, think again</span>
+
+<span class="c"># conditional edge = the diamond in the diagram</span>
+<span class="k">def</span> <b>route</b>(state) -> str:
+    last = state[<span class="s">"messages"</span>][-1]
+    <span class="k">return</span> <span class="s">"tools"</span> <span class="k">if</span> last.tool_calls <span class="k">else</span> <span class="s">"persist"</span>
+
+g.add_conditional_edges(<span class="s">"agent"</span>, route, {<span class="s">"tools"</span>:<span class="s">"tools"</span>, <span class="s">"persist"</span>:<span class="s">"persist"</span>})</pre>
+    <div class="note"><span class="l">the ReAct loop</span>
+      <code>agent → tools → agent</code> is the classic reason-act loop. The model calls a
+      tool, sees the result, and gets to think again — possibly calling another tool —
+      until it has nothing left to do and produces a plain reply. That's how "find a photo,
+      <em>then</em> send it, <em>then</em> say something cute" happens in one turn.</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap col">
+    <div class="sec-no">05 — tools</div>
+    <h2>Tools: bind them, then let a ToolNode run them</h2>
+    <p>Two pieces. <b>Binding</b> tells the model what it <em>may</em> call (names, args,
+      docstrings become the schema). The prebuilt <b>ToolNode</b> actually executes the
+      calls the model makes:</p>
+<pre>llm_with_tools = llm.<b>bind_tools</b>([search_vault, send_message, send_media, save_fact])
+g.add_node(<span class="s">"tools"</span>, <b>ToolNode</b>(ALL_TOOLS))   <span class="c"># prebuilt executor</span>
+
+<span class="c"># a tool is a documented function — the docstring IS the model's instructions</span>
+<span class="k">@tool</span>
+<span class="k">def</span> <b>search_vault</b>(query: str) -> str:
+    <span class="s">"""Search Jenny's media vault by MEANING to find a photo/video to send."""</span>
+    ...</pre>
+    <div class="note"><span class="l">write docstrings for the model</span>
+      The model only knows what a tool does from its name, signature, and docstring.
+      Vague docstring → wrong tool at the wrong time. Treat them as prompt engineering.</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap col">
+    <div class="sec-no">06 — memory</div>
+    <h2>Memory: two completely different things</h2>
+    <p>"Memory" gets overloaded. In an agent there are two independent layers, and Jenny
+      uses both:</p>
+    <table class="mtable">
+      <thead><tr><th>Layer</th><th>Scope</th><th>Mechanism</th><th>In Jenny</th></tr></thead>
+      <tbody>
+        <tr><td><b>Short-term</b></td><td>One conversation thread</td>
+          <td>The <code>messages</code> list + a <b>checkpointer</b> keyed by <code>thread_id</code></td>
+          <td>We rebuild it each turn from our own message DB</td></tr>
+        <tr><td><b>Long-term</b></td><td>Everything you ever learned about a person</td>
+          <td><b>mem0</b> — LLM extracts durable facts into a vector store, recalled by meaning</td>
+          <td><code>memory.recall()</code> / <code>add_fact()</code>, keyed by <code>fan_id</code></td></tr>
+      </tbody>
+    </table>
+    <h3>Short-term: checkpointers (thread persistence)</h3>
+    <p>Give <code>compile()</code> a checkpointer and LangGraph saves state after every node,
+      keyed by a thread id. Re-invoke with the same thread and the conversation resumes —
+      survives restarts, enables pause/resume. This is LangGraph's built-in "remember this
+      chat":</p>
+<pre><span class="k">from</span> langgraph.checkpoint.postgres <span class="k">import</span> PostgresSaver
+graph = g.compile(checkpointer=PostgresSaver(...))
+graph.invoke(state, config={<span class="s">"configurable"</span>: {<span class="s">"thread_id"</span>: fan_id}})</pre>
+    <div class="note"><span class="l">design note for v1</span>
+      Jenny skips the checkpointer and instead reloads history from our own Firestore
+      message DB in <code>load_context</code>. Same effect, and we own the data for analytics.
+      Add a checkpointer later if you want LangGraph to manage thread state for you.</div>
+    <h3>Long-term: mem0 (the "she remembers me" layer)</h3>
+    <p>mem0 is the semantic memory. It reads turns, extracts facts ("does night shifts",
+      "has a labrador"), de-duplicates them over time, and returns the relevant ones for the
+      current message — so recall stays sharp even after thousands of messages:</p>
+<pre>memory.add_turn(fan_id, fan_text, jenny_text)   <span class="c"># extract &amp; store facts</span>
+facts = memory.recall(fan_id, incoming)          <span class="c"># semantic lookup for THIS msg</span></pre>
+  </div>
+</section>
+
+<section>
+  <div class="wrap col">
+    <div class="sec-no">07 — summarization</div>
+    <h2>Summarization: keeping context small as chats grow</h2>
+    <p>A months-long chat won't fit in the context window, and stuffing it is slow and
+      expensive. The fix is a <b>summarization node</b>: once the message list crosses a
+      threshold, fold the oldest turns into a running summary and keep only the last few
+      verbatim. It's just another node you drop into the graph before <code>agent</code>:</p>
+<pre><span class="k">def</span> <b>summarize_if_long</b>(state) -> dict:
+    msgs = state[<span class="s">"messages"</span>]
+    <span class="k">if</span> len(msgs) &lt;= 16:
+        <span class="k">return</span> {}                       <span class="c"># nothing to do</span>
+    old, keep = msgs[:-8], msgs[-8:]
+    summary = llm.invoke([SystemMessage(<span class="s">"Summarize this chat as Jenny's notes."</span>), *old])
+    <span class="c"># RemoveMessage tells the add_messages reducer to DROP those ids</span>
+    drops = [RemoveMessage(id=m.id) <span class="k">for</span> m <span class="k">in</span> old]
+    <span class="k">return</span> {<span class="s">"messages"</span>: [*drops, SystemMessage(<span class="s">"Earlier: "</span> + summary.content), *keep]}</pre>
+    <div class="note key"><span class="l">three altitudes of memory, together</span>
+      <b>Summary</b> compresses this conversation · <b>checkpointer</b> persists this
+      conversation · <b>mem0</b> remembers the person across all conversations. A convincing
+      "she really knows me" comes from layering all three, not picking one.</div>
+    <p>Related helper: <code>trim_messages()</code> from langchain-core does token-budget
+      trimming when you'd rather drop than summarize.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap col">
+    <div class="sec-no">08 — why</div>
+    <h2>Why LangGraph here, not a plain loop</h2>
+    <div class="cards">
+      <div class="card"><span class="tag">branching</span><h4>Decide, don't script</h4>
+        <p>Reply vs. search vs. send PPV isn't a fixed sequence. Conditional edges let the
+          model drive, with the graph keeping it safe.</p></div>
+      <div class="card"><span class="tag">persistence</span><h4>State for free</h4>
+        <p>Checkpointers give durable per-fan threads without you hand-rolling resume logic.</p></div>
+      <div class="card"><span class="tag">portability</span><h4>Swap the model</h4>
+        <p>You're on OpenRouter today. The graph doesn't care — change one line to A/B
+          DeepSeek vs. Grok for Jenny's voice.</p></div>
+      <div class="card"><span class="tag">observability</span><h4>See every step</h4>
+        <p>Each node is inspectable. When Jenny does something odd, you know whether it was
+          recall, the model, or a tool.</p></div>
+    </div>
+    <p>For a one-call-per-message bot none of this earns its weight. Jenny is a
+      decide-then-act agent with memory — exactly the shape LangGraph is for.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap col">
+    <div class="sec-no">09 — glossary</div>
+    <h2>The 60-second glossary</h2>
+    <div class="gloss">
+      <div><b>StateGraph</b> — the builder you add nodes and edges to, then <code>.compile()</code>.</div>
+      <div><b>State</b> — the typed dict passed between nodes; fields merge via reducers.</div>
+      <div><b>Reducer</b> — merge rule for a state field (<code>add_messages</code> = append).</div>
+      <div><b>Node</b> — a function <code>f(state) → partial update</code>.</div>
+      <div><b>Edge</b> — fixed next-node link; <b>conditional edge</b> picks the next node from state.</div>
+      <div><b>ToolNode</b> — prebuilt node that executes the model's tool calls.</div>
+      <div><b>bind_tools</b> — attaches tool schemas to the model so it can request them.</div>
+      <div><b>Checkpointer</b> — saves state per <code>thread_id</code> for resume/persistence (short-term memory).</div>
+      <div><b>mem0</b> — external long-term fact memory, recalled semantically per user.</div>
+      <div><b>RemoveMessage</b> — sentinel that tells the reducer to delete messages (used when summarizing).</div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap col">LangGraph crash course · mapped to agent/graph.py · Jenny agent v1</div>
+</footer>
+
+<script>
+// honor the viewer's theme toggle without fighting the media query
+(function(){
+  try{
+    var t = window.matchMedia && matchMedia('(prefers-color-scheme: dark)');
+  }catch(e){}
+})();
+</script>

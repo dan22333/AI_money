@@ -1,0 +1,25 @@
+# Secrets — never commit. Everything in secrets/ except the template + docs.
+secrets/*
+!secrets/.env.example
+!secrets/README.md
+.env
+.env.local
+.env.*.local
+.fanvue_tokens.json
+*.pem
+*-key.pem
+
+# Node / build
+node_modules/
+.next/
+dist/
+build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store

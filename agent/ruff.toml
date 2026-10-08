@@ -1,0 +1,9 @@
+line-length = 120
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E741", "E702"]  # allow short names and compact one-liners in tests/helpers
+
+[lint.per-file-ignores]
+"tests/*" = ["E402"]  # tests tweak sys.path before importing

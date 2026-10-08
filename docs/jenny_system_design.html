@@ -1,0 +1,548 @@
+<title>Jenny Agent — System Design v2</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --bg:#e9edf1; --surface:#f7f9fb; --surface-2:#dfe5ec; --code-bg:#eef2f6;
+  --ink:#131c26; --ink-soft:#4a5765; --ink-faint:#74828f; --line:#cad2db;
+  --flow:#0c8d80; --flow-bright:#10a99a; --state:#b56f1f; --state-soft:#e3b877;
+  --decision:#475569; --good:#1f9d57; --warn:#c99a2e; --crit:#c4453b;
+  --heat1:#2f8f80; --heat2:#5aa845; --heat3:#d08a2a; --heat4:#c4453b;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --maxw:72ch; --wide:1120px;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0c131b; --surface:#131d28; --surface-2:#1b2735; --code-bg:#101a24;
+  --ink:#e7eef4; --ink-soft:#9fadbb; --ink-faint:#6b7a89; --line:#263340;
+  --flow:#2dd4bf; --flow-bright:#5ee7d6; --state:#e0a44a; --state-soft:#8a6327;
+  --decision:#94a3b8; --good:#34d17f; --warn:#e0b84a; --crit:#ef6a60;
+  --heat1:#2dd4bf; --heat2:#6bd47f; --heat3:#e0a44a; --heat4:#ef6a60;
+}}
+:root[data-theme="light"]{
+  --bg:#e9edf1; --surface:#f7f9fb; --surface-2:#dfe5ec; --code-bg:#eef2f6;
+  --ink:#131c26; --ink-soft:#4a5765; --ink-faint:#74828f; --line:#cad2db;
+  --flow:#0c8d80; --flow-bright:#10a99a; --state:#b56f1f; --decision:#475569; --good:#1f9d57;
+  --heat1:#2f8f80; --heat2:#5aa845; --heat3:#d08a2a; --heat4:#c4453b;}
+:root[data-theme="dark"]{
+  --bg:#0c131b; --surface:#131d28; --surface-2:#1b2735; --code-bg:#101a24;
+  --ink:#e7eef4; --ink-soft:#9fadbb; --ink-faint:#6b7a89; --line:#263340;
+  --flow:#2dd4bf; --flow-bright:#5ee7d6; --state:#e0a44a; --decision:#94a3b8; --good:#34d17f;
+  --heat1:#2dd4bf; --heat2:#6bd47f; --heat3:#e0a44a; --heat4:#ef6a60;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.62;font-size:16.5px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:var(--wide);margin:0 auto;padding:0 24px}
+.col{max-width:var(--maxw);margin-inline:auto}
+h1,h2,h3{text-wrap:balance;line-height:1.14}
+p{color:var(--ink-soft)}
+a{color:var(--flow)}
+code{font-family:var(--mono);font-size:.85em;background:var(--code-bg);padding:.1em .36em;border-radius:5px}
+.eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--flow);font-weight:600}
+header{border-bottom:1px solid var(--line);padding:68px 0 44px;position:relative;overflow:hidden}
+header .wrap{position:relative;z-index:1}
+.hgrid{position:absolute;inset:0;z-index:0;opacity:.5;background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:36px 36px;-webkit-mask-image:radial-gradient(ellipse 80% 70% at 75% 0%,#000,transparent 72%);mask-image:radial-gradient(ellipse 80% 70% at 75% 0%,#000,transparent 72%)}
+h1{font-size:clamp(2.2rem,5vw,3.3rem);font-weight:800;letter-spacing:-.022em;margin:.4rem 0 0}
+h1 .hl{color:var(--flow)}
+.lede{font-size:1.15rem;max-width:64ch;margin-top:1rem}
+.toc{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:1.5rem;font-family:var(--mono);font-size:.76rem}
+.toc a{color:var(--ink-soft);text-decoration:none}.toc a:hover{color:var(--flow)}
+section{padding:50px 0;border-bottom:1px solid var(--line)}
+.sec-no{font-family:var(--mono);color:var(--flow);font-size:.8rem;font-weight:600}
+h2{font-size:1.72rem;font-weight:750;letter-spacing:-.015em;margin:.2rem 0 .5rem}
+h3{font-size:1.1rem;font-weight:700;margin:1.7rem 0 .3rem}
+.col p{margin:.65rem 0}
+pre{background:var(--code-bg);border:1px solid var(--line);border-left:3px solid var(--flow);border-radius:9px;padding:14px 16px;overflow-x:auto;margin:1rem 0;font-family:var(--mono);font-size:.8rem;line-height:1.55;color:var(--ink)}
+pre .c{color:var(--ink-faint)}pre .k{color:var(--flow-bright);font-weight:600}pre .s{color:var(--state)}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px;margin:1.3rem 0}
+.scroll{overflow-x:auto}
+svg.d{width:100%;min-width:620px;height:auto;display:block}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-family:var(--mono);font-size:.72rem;color:var(--ink-soft)}
+.legend span{display:inline-flex;align-items:center;gap:7px}
+.sw{width:14px;height:14px;border-radius:4px;flex:none}
+.lanes{display:grid;gap:14px}
+.lane{display:grid;gap:10px}
+.lane-title{font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);font-weight:600}
+.row{display:flex;flex-wrap:wrap;gap:10px}
+.box{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:11px 14px;flex:1 1 150px;min-width:140px}
+.box b{display:block;font-size:.9rem}.box small{color:var(--ink-faint);font-family:var(--mono);font-size:.7rem}
+.box.hub{border-color:var(--flow);border-width:1.5px;background:linear-gradient(0deg,color-mix(in srgb,var(--flow) 8%,var(--surface)),var(--surface))}
+.flowdown{text-align:center;color:var(--flow);font-size:1.2rem;line-height:1}
+table{width:100%;border-collapse:collapse;margin:1.1rem 0;font-size:.87rem;display:block;overflow-x:auto}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-family:var(--mono);font-size:.67rem;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;white-space:nowrap}
+td b{color:var(--ink)}td code{white-space:nowrap}
+.pill{font-family:var(--mono);font-size:.66rem;padding:2px 7px;border-radius:999px;font-weight:600;white-space:nowrap;display:inline-block}
+.p-back{background:color-mix(in srgb,var(--state) 20%,transparent);color:var(--state)}
+.p-live{background:color-mix(in srgb,var(--good) 20%,transparent);color:var(--good)}
+.p-rec{background:color-mix(in srgb,var(--decision) 22%,transparent);color:var(--decision)}
+.p-key{background:color-mix(in srgb,var(--flow) 22%,transparent);color:var(--flow)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:1.2rem 0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px}
+.card .tag{font-family:var(--mono);font-size:.68rem;letter-spacing:.05em;font-weight:600;color:var(--flow);display:block;margin-bottom:.4rem}
+.card h4{margin:0 0 .3rem;font-size:1rem}.card p{margin:0;font-size:.87rem}
+.card ul{margin:.4rem 0 0;padding-left:1.1rem;font-size:.83rem;color:var(--ink-soft)}
+.note{border:1px solid var(--line);border-left:3px solid var(--state);background:var(--surface);border-radius:9px;padding:13px 16px;margin:1.2rem 0;font-size:.92rem}
+.note .l{font-family:var(--mono);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--state);font-weight:700;display:block;margin-bottom:.3rem}
+.note.key{border-left-color:var(--flow)}.note.key .l{color:var(--flow)}
+.node{fill:var(--surface-2);stroke:var(--flow);stroke-width:1.6}
+.node.term{fill:var(--flow);stroke:var(--flow)}.node.tool{stroke-dasharray:5 4}.node.light{stroke:var(--state)}
+.nlabel{font-family:var(--mono);font-size:12.5px;font-weight:600;fill:var(--ink);text-anchor:middle;dominant-baseline:middle}
+.nsub{font-family:var(--mono);font-size:9.5px;fill:var(--ink-faint);text-anchor:middle}
+.nlabel.inv{fill:var(--bg)}
+.diamond{fill:var(--surface-2);stroke:var(--decision);stroke-width:1.6}
+.edge{fill:none;stroke:var(--flow);stroke-width:2;marker-end:url(#arr2);stroke-dasharray:7 7;animation:march 1s linear infinite}
+.edge.cond{stroke:var(--decision);stroke-dasharray:3 6;marker-end:url(#arrd)}
+.edge.par{stroke:var(--state);marker-end:url(#arrs)}
+.elabel{font-family:var(--mono);font-size:10.5px;fill:var(--ink-faint)}
+@keyframes march{to{stroke-dashoffset:-14}}
+@media (prefers-reduced-motion:reduce){.edge{animation:none}}
+.modes{display:flex;flex-wrap:wrap;gap:10px;margin:1rem 0}
+.mode{border-radius:10px;padding:10px 14px;border:1.5px solid;font-size:.85rem;flex:1 1 150px}
+.mode b{font-family:var(--mono);display:block;font-size:.78rem;letter-spacing:.04em}
+.m1{border-color:var(--heat1);background:color-mix(in srgb,var(--heat1) 9%,transparent)}.m1 b{color:var(--heat1)}
+.m2{border-color:var(--heat2);background:color-mix(in srgb,var(--heat2) 9%,transparent)}.m2 b{color:var(--heat2)}
+.m3{border-color:var(--heat3);background:color-mix(in srgb,var(--heat3) 9%,transparent)}.m3 b{color:var(--heat3)}
+.m4{border-color:var(--heat4);background:color-mix(in srgb,var(--heat4) 9%,transparent)}.m4 b{color:var(--heat4)}
+.proof{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:14px 16px;font-family:var(--mono);font-size:.78rem;overflow-x:auto;margin:1rem 0}
+.proof .row2{display:flex;justify-content:space-between;gap:12px;padding:3px 0;border-bottom:1px dashed var(--line);white-space:nowrap}
+.proof .row2:last-child{border-bottom:0}
+.proof .fanq{color:var(--ink-soft)}
+.badge{font-family:var(--mono);font-weight:700;padding:1px 8px;border-radius:5px;font-size:.74rem}
+.b1{color:var(--heat1);background:color-mix(in srgb,var(--heat1) 14%,transparent)}
+.b2{color:var(--heat2);background:color-mix(in srgb,var(--heat2) 14%,transparent)}
+.b3{color:var(--heat3);background:color-mix(in srgb,var(--heat3) 14%,transparent)}
+.b4{color:var(--heat4);background:color-mix(in srgb,var(--heat4) 14%,transparent)}
+.layers{display:grid;gap:8px;margin:1.1rem 0;counter-reset:ly}
+.layer{display:flex;gap:12px;align-items:flex-start;background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--flow);border-radius:9px;padding:11px 14px}
+.layer .n{font-family:var(--mono);font-weight:700;color:var(--flow)}
+.layer b{font-size:.92rem}.layer small{color:var(--ink-faint);display:block;font-size:.8rem}
+footer{padding:36px 0 64px;color:var(--ink-faint);font-family:var(--mono);font-size:.76rem;text-align:center}
+:focus-visible{outline:2px solid var(--flow);outline-offset:3px;border-radius:3px}
+</style>
+
+<header>
+  <div class="hgrid"></div>
+  <div class="wrap">
+    <div class="eyebrow">System design · v2 · build spec</div>
+    <h1>The <span class="hl">Jenny agent</span>, end to end</h1>
+    <p class="lede">The complete picture: how events drive the agent, how data syncs with Fanvue, how
+      media is published, how the agent thinks and shifts intimacy, and how we measure what actually
+      drives revenue.</p>
+    <nav class="toc">
+      <a href="#map">01 map</a><a href="#router">02 event router</a><a href="#sync">03 sync</a>
+      <a href="#tables">04 tables</a><a href="#media">05 media</a><a href="#agent">06 agent</a>
+      <a href="#context">07 context</a><a href="#modes">08 modes</a><a href="#turn">09 a turn</a>
+      <a href="#sell">10 selling</a><a href="#analytics">11 analytics</a><a href="#run">12 run</a><a href="#cicd">13 ci/cd</a>
+    </nav>
+  </div>
+</header>
+
+<!-- 01 MAP -->
+<section id="map"><div class="wrap">
+  <div class="col"><div class="sec-no">01</div><h2>System map</h2>
+    <p>Inputs reach one brain on Cloud Run. The brain reads/writes three stores, calls two models,
+      and talks back to Fanvue. Everything funnels through an <b>event router</b> first — not every
+      event runs the full agent.</p></div>
+  <div class="panel">
+    <div class="lanes">
+      <div class="lane"><span class="lane-title">Inputs</span>
+        <div class="row">
+          <div class="box"><b>Fanvue webhooks</b><small>push · msgs, payments, subs, follows</small></div>
+          <div class="box"><b>GCS media inbox</b><small>push · file (+ optional description)</small></div>
+          <div class="box"><b>Cloud Scheduler</b><small>cron · nightly reconcile + media sync</small></div>
+          <div class="box"><b>/simulate</b><small>you · synthetic test fan</small></div>
+        </div></div>
+      <div class="flowdown">▼</div>
+      <div class="lane"><span class="lane-title">Brain — Cloud Run (FastAPI)</span>
+        <div class="row">
+          <div class="box hub"><b>event router</b><small>classify event → action</small></div>
+          <div class="box hub"><b>LangGraph agent</b><small>decide → act → learn</small></div>
+          <div class="box hub"><b>media pipeline</b><small>upload + describe + catalog</small></div>
+          <div class="box hub"><b>/admin/reconcile</b><small>pull earnings/insights</small></div>
+        </div></div>
+      <div class="flowdown">▼</div>
+      <div class="lane"><span class="lane-title">Stores · models · Fanvue</span>
+        <div class="row">
+          <div class="box"><b>Firestore</b><small>fans · messages · purchases · catalog</small></div>
+          <div class="box"><b>Qdrant (mem0)</b><small>durable fan facts</small></div>
+          <div class="box"><b>BigQuery</b><small>analytics warehouse</small></div>
+          <div class="box"><b>Secret Manager</b><small>tokens · keys</small></div>
+          <div class="box"><b>OpenRouter</b><small>Grok 4.3 · Mistral-Nemo · vision</small></div>
+          <div class="box"><b>Fanvue API</b><small>send · upload · read fans</small></div>
+        </div></div>
+    </div>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--good)"></span>push / live</span>
+      <span><span class="sw" style="background:var(--state)"></span>our pull</span>
+      <span><span class="sw" style="background:var(--flow)"></span>brain</span>
+    </div>
+  </div>
+</div></section>
+
+<!-- 02 ROUTER -->
+<section id="router"><div class="wrap col">
+  <div class="sec-no">02</div><h2>The event router — not everything runs the agent</h2>
+  <p>A fan message deserves a full, thoughtful reply. A payment is mostly a database update (with an
+    optional reaction). A new subscriber is a welcome. So the first thing the brain does is look at
+    the event type and route it to the right handler — this keeps cost down and behavior correct.</p>
+  <table><thead><tr><th>Event</th><th>Router action</th><th>Runs agent?</th></tr></thead><tbody>
+    <tr><td><code>creator.message.received</code></td><td>Full agent turn → reply</td><td><b>Yes</b> — full</td></tr>
+    <tr><td><code>creator.payment.succeeded</code></td><td>Record purchase, bump spend, link to <code>message_uuid</code>; optionally trigger a thank-you</td><td>Optional — a short reaction</td></tr>
+    <tr><td><code>creator.subscription.activated</code></td><td>Create/mark fan; optional welcome message</td><td>Optional — welcome</td></tr>
+    <tr><td><code>creator.subscription.deactivated</code></td><td>Mark churned; maybe a win-back later</td><td>No</td></tr>
+    <tr><td><code>creator.follow.created</code></td><td>Create fan record</td><td>No</td></tr>
+  </tbody></table>
+  <div class="note key"><span class="l">purchases become conversation</span>
+    A payment arrives on its <em>own</em> webhook, not inside the chat. But it carries
+    <code>message_uuid</code>, so we join it to the exact message/PPV it unlocked, write it into the
+    conversation as a signal, and let Jenny react like a human: <em>"mmm glad you couldn't resist
+    that one 😏"</em>. Data <b>and</b> a conversational beat.</div>
+</div></section>
+
+<!-- 03 SYNC -->
+<section id="sync"><div class="wrap col">
+  <div class="sec-no">03</div><h2>Source of truth &amp; the three-beat sync</h2>
+  <div class="cards">
+    <div class="card"><span class="tag">FANVUE OWNS</span><h4>Ledger &amp; bytes</h4>
+      <ul><li>Media files (vault)</li><li>Payments / purchases</li><li>Subscription status</li><li>Chat history</li></ul></div>
+    <div class="card"><span class="tag">WE OWN</span><h4>The intelligence</h4>
+      <ul><li>Media <em>meaning</em> (desc, tags, heat)</li><li>Summary &amp; intimacy mode</li><li>mem0 durable facts</li><li>Decisions &amp; analytics</li></ul></div>
+  </div>
+  <table><thead><tr><th>Beat</th><th>When</th><th>How</th><th>Catches</th></tr></thead><tbody>
+    <tr><td><span class="pill p-back">BACKFILL</span></td><td>Once</td><td><code>/subscribers · /insights/fans · /profiles/bulk · /earnings · /media</code></td><td>Seeds all history from day 0</td></tr>
+    <tr><td><span class="pill p-live">LIVE</span></td><td>Always</td><td>Fanvue <b>webhooks</b></td><td>New messages, payments, subs, follows — instantly</td></tr>
+    <tr><td><span class="pill p-rec">RECONCILE</span></td><td>Nightly cron</td><td><code>/earnings · /subscribers · /insights/fans · /profiles/bulk</code> diff</td><td><b>Anything a webhook missed</b> + slow changes (renames, spend drift, new users)</td></tr>
+  </tbody></table>
+  <div class="note"><span class="l">rule</span>Every write is an idempotent upsert keyed by id
+    (<code>fanUuid · mediaUuid · invoiceId · eventId</code>). Webhook + reconcile writing the same
+    record yields one row, never two.</div>
+</div></section>
+
+<!-- 04 TABLES -->
+<section id="tables"><div class="wrap col">
+  <div class="sec-no">04</div><h2>Data tables (Firestore)</h2>
+  <p>Users are separate from messages. Per-fan data is a document tree, so one read loads the whole
+    fan fast. <span class="pill p-key">join key</span> marks the fields that make analytics possible.</p>
+  <h3><code>fans/{fanUuid}</code> — users table</h3>
+  <table><thead><tr><th>Group</th><th>Fields</th><th>Source</th></tr></thead><tbody>
+    <tr><td>Identity</td><td><code>handle, displayName, avatarUrl, nickname</code></td><td>profiles/bulk · webhooks</td></tr>
+    <tr><td>Lifecycle</td><td><code>firstSeenAt, subscribedAt, subscriptionStatus, lastSeenAt</code></td><td>subscription events</td></tr>
+    <tr><td>Money</td><td><code>totalSpendCents, purchaseCount, lastPurchaseAt, tier</code></td><td>payment events · reconcile</td></tr>
+    <tr><td>Convo state</td><td><code>currentMode, currentSessionId, sessionCount, rollingSummary</code></td><td>agent, each turn</td></tr>
+    <tr><td>Ops</td><td><code>tags[], flags, doNotEngage, source(fanvue|sim)</code></td><td>agent / manual</td></tr>
+  </tbody></table>
+  <div class="cards">
+    <div class="card"><span class="tag">fans/{id}/messages/{msgId}</span><h4>Transcript</h4>
+      <p><code>role, text, mediaUuids[], priceCents, </code><span class="pill p-key">mode</span> <span class="pill p-key">sessionId</span> <code>ts, source</code></p></div>
+    <div class="card"><span class="tag">fans/{id}/purchases/{invoiceId}</span><h4>Purchases</h4>
+      <p><code>source, billingReason, grossCents, netCents, currency, </code><span class="pill p-key">messageUuid</span> <code>ts</code></p></div>
+    <div class="card"><span class="tag">catalog/{mediaUuid}</span><h4>Media catalog</h4>
+      <p><code>description, tags[], heat(1-4), suggestedPriceCents, metaSource(human|vision), status, gcsPath</code></p></div>
+    <div class="card"><span class="tag">processed_events/{eventId}</span><h4>Idempotency</h4>
+      <p>Dedupe webhook retries — write id before processing.</p></div>
+  </div>
+  <div class="note"><span class="l">mem0 separate</span>Durable facts live in <b>Qdrant</b> keyed by
+    <code>fanUuid</code>. Simulated fans use a <code>sim:</code> id prefix so test data never pollutes
+    real analytics.</div>
+</div></section>
+
+<!-- 05 MEDIA -->
+<section id="media"><div class="wrap">
+  <div class="col"><div class="sec-no">05</div><h2>Media pipeline — human or machine described</h2>
+    <p>Drop a file in a GCS folder and it lands in the Fanvue vault <em>and</em> the catalog. Photos can
+      be auto-described by a vision model; videos (or anything you want precise) can ship with a
+      <b>human-written description</b> — the creator's words win.</p></div>
+  <div class="panel"><div class="scroll">
+    <svg class="d" viewBox="0 0 980 170" role="img" aria-label="Media pipeline with optional human sidecar metadata.">
+      <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--flow)"></path></marker></defs>
+      <rect class="node" x="8" y="62" width="150" height="50" rx="9"></rect><text class="nlabel" x="83" y="82">GCS drop</text><text class="nsub" x="83" y="98">clip.mp4 (+clip.json)</text>
+      <rect class="node" x="196" y="62" width="150" height="50" rx="9"></rect><text class="nlabel" x="271" y="82">upload job</text><text class="nsub" x="271" y="98">Eventarc trigger</text>
+      <rect class="node" x="384" y="62" width="150" height="50" rx="9"></rect><text class="nlabel" x="459" y="82">→ Fanvue vault</text><text class="nsub" x="459" y="98">multipart → ready</text>
+      <rect class="node" x="572" y="28" width="168" height="44" rx="9"></rect><text class="nlabel" x="656" y="47">sidecar? use it</text><text class="nsub" x="656" y="62">human desc wins</text>
+      <rect class="node light" x="572" y="100" width="168" height="44" rx="9"></rect><text class="nlabel" x="656" y="119">else vision</text><text class="nsub" x="656" y="134">auto desc/tags/heat</text>
+      <rect class="node term" x="790" y="62" width="150" height="50" rx="9"></rect><text class="nlabel inv" x="865" y="82">catalog row</text><text class="nsub" x="865" y="98" style="fill:var(--bg);opacity:.8">+ archive file</text>
+      <path class="edge" d="M158 87 H196"></path><path class="edge" d="M346 87 H384"></path>
+      <path class="edge" d="M534 80 H572"></path><path class="edge" d="M534 94 H572" style="marker-end:none"></path>
+      <path class="edge" d="M740 50 H790"></path><path class="edge" d="M740 122 H790"></path>
+    </svg>
+  </div></div>
+  <div class="col"><p>The catalog row records <code>metaSource: human|vision</code> and a <code>needsReview</code>
+    flag, plus an admin endpoint to edit later. The <b>heat</b> rating (1–4) maps to the intimacy modes,
+    so Jenny only reaches for EXPLICIT media when she's in EXPLICIT mode. Price can also be pushed to
+    Fanvue via <code>PATCH /media/{uuid}</code>.</p></div>
+</div></section>
+
+<!-- 06 AGENT -->
+<section id="agent"><div class="wrap">
+  <div class="col"><div class="sec-no">06</div><h2>The LangGraph agent</h2>
+    <p>One fan message = one run. Four context loads happen <b>in parallel</b>, then Grok decides and
+      acts in a tool loop, then we persist and learn. <code>classify_mode</code> is a real node — the
+      one that picks the intimacy mode, every single turn.</p></div>
+  <div class="panel"><div class="scroll">
+    <svg class="d" viewBox="0 0 980 330" role="img" aria-label="Agent graph with parallel context loads including a fast mode classifier.">
+      <defs>
+        <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--flow)"></path></marker>
+        <marker id="arrd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--decision)"></path></marker>
+        <marker id="arrs" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--state)"></path></marker>
+      </defs>
+      <circle class="node term" cx="40" cy="165" r="24"></circle><text class="nlabel inv" x="40" y="165">in</text>
+      <rect class="node" x="92" y="141" width="110" height="48" rx="10"></rect><text class="nlabel" x="147" y="160">ingest</text><text class="nsub" x="147" y="176">session/mode</text>
+      <rect x="236" y="20" width="196" height="290" rx="12" fill="none" stroke="var(--state)" stroke-dasharray="4 5" opacity=".6"></rect>
+      <text class="nsub" x="334" y="36" style="fill:var(--state)">load_context · parallel</text>
+      <rect class="node" x="252" y="48" width="164" height="42" rx="9"></rect><text class="nlabel" x="334" y="69">recall_facts</text>
+      <rect class="node" x="252" y="108" width="164" height="42" rx="9"></rect><text class="nlabel" x="334" y="129">load_history</text>
+      <rect class="node" x="252" y="168" width="164" height="42" rx="9"></rect><text class="nlabel" x="334" y="189">load_profile</text>
+      <rect class="node light" x="252" y="228" width="164" height="54" rx="9"></rect><text class="nlabel" x="334" y="247">classify_mode</text><text class="nsub" x="334" y="263" style="fill:var(--state)">Mistral-Nemo · fast</text>
+      <rect class="node" x="474" y="139" width="120" height="52" rx="10"></rect><text class="nlabel" x="534" y="159">agent</text><text class="nsub" x="534" y="175">Grok 4.3</text>
+      <rect class="node tool" x="474" y="40" width="120" height="46" rx="10"></rect><text class="nlabel" x="534" y="63">tools</text>
+      <polygon class="diamond" points="664,140 700,165 664,190 628,165"></polygon><text class="nsub" x="664" y="167">tools?</text>
+      <rect class="node" x="742" y="141" width="118" height="48" rx="10"></rect><text class="nlabel" x="801" y="160">persist</text><text class="nsub" x="801" y="176">save+learn</text>
+      <circle class="node term" cx="924" cy="165" r="24"></circle><text class="nlabel inv" x="924" y="165">out</text>
+      <path class="edge" d="M64 165 H92"></path><path class="edge par" d="M202 165 H236"></path>
+      <path class="edge" d="M432 165 H474"></path><path class="edge cond" d="M594 165 H628"></path>
+      <path class="edge cond" d="M664 140 V63 H596"></path><path class="edge" d="M534 86 V139"></path>
+      <path class="edge" d="M700 165 H742"></path><path class="edge" d="M860 165 H900"></path>
+      <text class="elabel" x="606" y="156">no</text><text class="elabel" x="672" y="105">yes</text><text class="elabel" x="540" y="118">loop</text>
+    </svg>
+  </div>
+  <div class="legend">
+    <span><span class="sw" style="background:var(--flow)"></span>process</span>
+    <span><span class="sw" style="background:var(--surface-2);border:1.6px solid var(--state)"></span>fast classifier</span>
+    <span><span class="sw" style="background:var(--surface-2);border:1.6px dashed var(--flow)"></span>tool node</span>
+    <span><span class="sw" style="background:var(--surface-2);border:1.6px dashed var(--decision)"></span>decision</span>
+  </div></div>
+  <div class="col"><table><thead><tr><th>Node</th><th>Job</th></tr></thead><tbody>
+    <tr><td><code>ingest</code></td><td>Resolve fan; new session? reset mode; set real/sim namespace</td></tr>
+    <tr><td><code>recall_facts</code></td><td>mem0 semantic recall of durable facts</td></tr>
+    <tr><td><code>load_history</code></td><td><b>Rolling summary + last ~15 raw messages</b></td></tr>
+    <tr><td><code>load_profile</code></td><td>Spend, tier, sub status — knows a buyer from a lurker</td></tr>
+    <tr><td><code>classify_mode</code></td><td>Mistral-Nemo → intimacy mode, every turn (§08)</td></tr>
+    <tr><td><code>agent</code></td><td>Grok 4.3 + tools; decides &amp; speaks, gated by mode</td></tr>
+    <tr><td><code>tools</code></td><td><code>offer_content · send_teaser · send_message · save_fact</code> (see §10)</td></tr>
+    <tr><td><code>persist</code></td><td>Save msgs, update fan doc, async mem0 write, summarize if long</td></tr>
+  </tbody></table></div>
+</div></section>
+
+<!-- 07 CONTEXT -->
+<section id="context"><div class="wrap col">
+  <div class="sec-no">07</div><h2>What the model sees each turn</h2>
+  <p>The relationship is infinite, but the context stays small and bounded. Five compact layers are
+    assembled fresh on every message — never the whole raw transcript:</p>
+  <div class="layers">
+    <div class="layer"><span class="n">1</span><div><b>Persona</b><small>Who Jenny is + the never-break-character directive · from persona.md</small></div></div>
+    <div class="layer"><span class="n">2</span><div><b>Fan profile</b><small>joined 3w ago · spent $45 · active sub · VIP · from the fans table</small></div></div>
+    <div class="layer"><span class="n">3</span><div><b>mem0 facts</b><small>"night nurse, dog Rex, into tennis" · durable, semantic recall</small></div></div>
+    <div class="layer"><span class="n">4</span><div><b>Rolling summary</b><small>ONE evolving paragraph of all older history · updated as it grows (not a stack)</small></div></div>
+    <div class="layer"><span class="n">5</span><div><b>Last ~15 raw messages</b><small>the exact recent flow, verbatim</small></div></div>
+    <div class="layer" style="border-left-color:var(--state)"><span class="n" style="color:var(--state)">+</span><div><b>Mode directive</b><small>from classify_mode: "You are in FLIRTY mode — suggestive welcome, not explicit yet"</small></div></div>
+  </div>
+  <div class="note key"><span class="l">one summary, not many</span>When history passes a threshold,
+    <code>persist</code> folds the newly-old messages into the single <code>rollingSummary</code> — it
+    never accumulates multiple summary blobs. So "past summaries" are already inside the current one.
+    Cost stays flat whether it's day 1 or day 400.</div>
+</div></section>
+
+<!-- 08 MODES -->
+<section id="modes"><div class="wrap col">
+  <div class="sec-no">08</div><h2>Intimacy modes + live proof</h2>
+  <p>Jenny runs in one of four heat levels, re-decided every turn by <code>classify_mode</code>. The
+    mode gates tone, explicit language, NSFW media, and PPV nudges.</p>
+  <div class="modes">
+    <div class="mode m1"><b>1 · COLD</b>New / greetings. Welcome, learn name.</div>
+    <div class="mode m2"><b>2 · WARM</b>Friendly rapport, light flirting. Resting state.</div>
+    <div class="mode m3"><b>3 · FLIRTY</b>Suggestive, teasing. Teaser media ok.</div>
+    <div class="mode m4"><b>4 · EXPLICIT</b>Sexual, explicit allowed. NSFW / PPV in play.</div>
+  </div>
+  <div class="panel"><div class="scroll">
+    <svg class="d" viewBox="0 0 900 170" role="img" aria-label="Mode state machine with escalation, de-escalation, and session reset.">
+      <defs><marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--flow)"></path></marker>
+      <marker id="arrr" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M10 0 L0 5 L10 10 z" fill="var(--decision)"></path></marker></defs>
+      <rect x="30" y="66" width="150" height="50" rx="25" fill="color-mix(in srgb,var(--heat1) 12%,var(--surface))" stroke="var(--heat1)" stroke-width="1.6"></rect><text class="nlabel" x="105" y="92" style="fill:var(--heat1)">COLD</text>
+      <rect x="250" y="66" width="150" height="50" rx="25" fill="color-mix(in srgb,var(--heat2) 12%,var(--surface))" stroke="var(--heat2)" stroke-width="1.6"></rect><text class="nlabel" x="325" y="92" style="fill:var(--heat2)">WARM</text>
+      <rect x="470" y="66" width="150" height="50" rx="25" fill="color-mix(in srgb,var(--heat3) 12%,var(--surface))" stroke="var(--heat3)" stroke-width="1.6"></rect><text class="nlabel" x="545" y="92" style="fill:var(--heat3)">FLIRTY</text>
+      <rect x="690" y="66" width="170" height="50" rx="25" fill="color-mix(in srgb,var(--heat4) 12%,var(--surface))" stroke="var(--heat4)" stroke-width="1.6"></rect><text class="nlabel" x="775" y="92" style="fill:var(--heat4)">EXPLICIT</text>
+      <path d="M180 84 H250" fill="none" stroke="var(--flow)" stroke-width="2" marker-end="url(#arr3)"></path>
+      <path d="M400 84 H470" fill="none" stroke="var(--flow)" stroke-width="2" marker-end="url(#arr3)"></path>
+      <path d="M620 84 H690" fill="none" stroke="var(--flow)" stroke-width="2" marker-end="url(#arr3)"></path>
+      <text class="elabel" x="188" y="74" style="fill:var(--flow)">fan escalates →</text>
+      <path d="M470 104 H402" fill="none" stroke="var(--decision)" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#arrr)"></path>
+      <path d="M690 104 H622" fill="none" stroke="var(--decision)" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#arrr)"></path>
+      <text class="elabel" x="470" y="136" style="fill:var(--decision)">← fan cools / changes topic</text>
+      <path d="M775 66 C775 18, 325 18, 325 62" fill="none" stroke="var(--state)" stroke-width="1.8" stroke-dasharray="2 5" marker-end="url(#arr3)"></path>
+      <text class="elabel" x="470" y="20" style="fill:var(--state)">new session → reset to WARM</text>
+    </svg>
+  </div></div>
+  <h3>Live classifier run (Mistral-Nemo, actual output)</h3>
+  <div class="proof">
+    <div class="row2"><span class="fanq">hey :)</span><span class="badge b2">WARM</span></div>
+    <div class="row2"><span class="fanq">how's your day going?</span><span class="badge b2">WARM</span></div>
+    <div class="row2"><span class="fanq">you're really pretty btw</span><span class="badge b3">FLIRTY</span></div>
+    <div class="row2"><span class="fanq">honestly you're driving me a little crazy 😏</span><span class="badge b3">FLIRTY</span></div>
+    <div class="row2"><span class="fanq">i can't stop thinking about your body</span><span class="badge b4">EXPLICIT</span></div>
+    <div class="row2"><span class="fanq">what are you wearing right now?</span><span class="badge b4">EXPLICIT</span></div>
+    <div class="row2"><span class="fanq">tell me exactly what you'd do to me</span><span class="badge b4">EXPLICIT</span></div>
+    <div class="row2"><span class="fanq">ok lol that got intense. how was training?</span><span class="badge b2">WARM</span></div>
+    <div class="row2"><span class="fanq">haha you're sweet. goodnight 🙂</span><span class="badge b2">WARM</span></div>
+  </div>
+  <div class="note key"><span class="l">session reset — your rule</span>A new session always resets to
+    WARM (or COLD if brand new), no matter how steamy last time ended. The summary still remembers it
+    got explicit, so Jenny rekindles naturally — but never cold-opens mid-explicit. Escalation is
+    re-earned each session, exactly like a real person.</div>
+</div></section>
+
+<!-- 09 TURN -->
+<section id="turn"><div class="wrap col">
+  <div class="sec-no">09</div><h2>A full turn, start to finish</h2>
+<pre><span class="k">1</span>  Fanvue → POST /webhook/fanvue        <span class="c"># fan: "you're driving me crazy 😏"</span>
+<span class="k">2</span>  router: message → full agent; verify signature; dedupe eventId
+<span class="k">3</span>  ingest        → same session (gap 4m); stored mode = WARM
+<span class="k">4</span>  load_context  → ‖ recall_facts ‖ load_history ‖ load_profile ‖ classify_mode
+                    facts: "night nurse, dog Rex"   profile: spent $20, active
+                    summary: "chatting ~1wk, playful, tipped once"
+                    classify (Mistral-Nemo) → FLIRTY
+<span class="k">5</span>  agent (Grok)  → tease + offer a teaser pic
+                    tool: search_vault("flirty gym teaser")
+<span class="k">6</span>  tools         → mediaUuid fv_abc (heat 3, matches FLIRTY)
+<span class="k">7</span>  agent         → tool: send_media(fv_abc, "earned this 😉", price=0) + reply text
+<span class="k">8</span>  persist       → save msgs (mode=FLIRTY, sessionId); fan.lastSeen=now
+                    async: mem0.add_turn(...);  summarize if &gt;20 msgs
+<span class="k">9</span>  reply delivered on Fanvue</pre>
+</div></section>
+
+<!-- 10 SELLING -->
+<section id="sell"><div class="wrap col">
+  <div class="sec-no">10</div><h2>When &amp; how Jenny sells — one deterministic tool</h2>
+  <p>The agent must <b>never</b> reason over inventory, purchases, or prices — that's where an LLM
+    hallucinates ("here's that video!" — one they already own). So all of it lives in a single
+    deterministic tool, <code>offer_content</code>. The agent only signals <em>"this feels like a sell
+    moment"</em> + a caption in Jenny's voice. The tool does every check and either sells or declines.</p>
+  <div class="cards">
+    <div class="card"><span class="tag">AGENT — non-deterministic</span><h4>Judgment &amp; voice</h4>
+      <ul><li>Is this a sell moment?</li><li>The caption wording</li></ul></div>
+    <div class="card"><span class="tag">offer_content — deterministic code</span><h4>Everything financial</h4>
+      <ul><li>Unsold &amp; appropriate item?</li><li>Which item · what price</li><li>Cooldown / not pushy</li><li>Send + record it</li></ul></div>
+  </div>
+  <h3>Inside the tool (all code, zero model judgment)</h3>
+<pre>offer_content(theme, caption):
+  <span class="k">1 TIMING</span>    mode&gt;=FLIRTY? monetize_ok? cooldown passed?  → else {status:<span class="s">"not_now"</span>}
+  <span class="k">2 ELIGIBLE</span>  catalog WHERE heat&lt;=mode
+                     AND uuid NOT IN purchasedUuids      <span class="c"># never re-sell</span>
+                     AND uuid NOT IN recentlyOffered
+                     AND matches theme                   → if empty {status:<span class="s">"nothing"</span>}
+  <span class="k">3 PICK</span>      rank eligible (theme-fit, heat-fit, later: conversion)
+  <span class="k">4 PRICE</span>     price = item.suggestedPriceCents
+  <span class="k">5 SEND</span>      Fanvue send_media(uuid, caption, price)
+  <span class="k">6 RECORD</span>    recentlyOffered+=uuid; lastPpvAt=now; offers++
+             → {status:<span class="s">"sent"</span>, item, price}</pre>
+  <div class="note key"><span class="l">the return contract = your rule</span>
+    <code>sent</code> → the agent's reply rides with it · <code>nothing</code> → keep chatting (flag a
+    content gap) · <code>not_now</code> → keep chatting, try later. <b>A sale never depends on the model
+    remembering inventory.</b> Free teasers use the same pattern via <code>send_teaser</code> (price 0,
+    same dedupe + heat gate) — so the agent hand-picks a <code>mediaUuid</code> or price in <em>no</em> path.</div>
+</div></section>
+
+<!-- 11 ANALYTICS -->
+<section id="analytics"><div class="wrap col">
+  <div class="sec-no">11</div><h2>Analytics — what actually drives revenue</h2>
+  <p>Yes, the schema is built for this. The whole point of the <span class="pill p-key">join key</span>
+    fields is to answer money questions. Because a purchase stores the <code>messageUuid</code> it came
+    from, and each message stores its <code>mode</code>, <code>mediaUuids</code> and <code>sessionId</code>,
+    we can trace revenue back to exactly what caused it.</p>
+  <div class="panel"><div class="scroll">
+    <svg class="d" viewBox="0 0 900 150" role="img" aria-label="Join path: purchase to message to mode and media, and to fan.">
+      <defs><marker id="arrj" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--flow)"></path></marker></defs>
+      <rect class="node" x="10" y="55" width="150" height="46" rx="9"></rect><text class="nlabel" x="85" y="74">purchase</text><text class="nsub" x="85" y="90">messageUuid, $</text>
+      <rect class="node" x="230" y="55" width="150" height="46" rx="9"></rect><text class="nlabel" x="305" y="74">message</text><text class="nsub" x="305" y="90">mode, mediaUuids</text>
+      <rect class="node" x="450" y="12" width="160" height="42" rx="9"></rect><text class="nlabel" x="530" y="37">mode</text>
+      <rect class="node" x="450" y="100" width="160" height="42" rx="9"></rect><text class="nlabel" x="530" y="125">catalog (media)</text>
+      <rect class="node" x="680" y="55" width="150" height="46" rx="9"></rect><text class="nlabel" x="755" y="74">fan</text><text class="nsub" x="755" y="90">tier, totalSpend</text>
+      <path d="M160 78 H230" fill="none" stroke="var(--flow)" stroke-width="2" marker-end="url(#arrj)"></path>
+      <path d="M380 70 L450 40" fill="none" stroke="var(--flow)" stroke-width="2" marker-end="url(#arrj)"></path>
+      <path d="M380 86 L450 116" fill="none" stroke="var(--flow)" stroke-width="2" marker-end="url(#arrj)"></path>
+      <path d="M610 121 C660 121, 680 100, 700 101" fill="none" stroke="var(--flow)" stroke-width="2" marker-end="url(#arrj)"></path>
+      <path d="M160 70 C 420 -20, 700 -10, 740 52" fill="none" stroke="var(--flow)" stroke-width="1.4" stroke-dasharray="3 4" marker-end="url(#arrj)"></path>
+    </svg>
+  </div></div>
+  <h3>Questions this answers out of the box</h3>
+  <div class="cards">
+    <div class="card"><span class="tag">conversion by mode</span><h4>Does heat sell?</h4><p>Join purchases → message.mode. "EXPLICIT messages convert at 8%, FLIRTY at 3%."</p></div>
+    <div class="card"><span class="tag">top content</span><h4>Which media earns?</h4><p>purchases → message.mediaUuids → catalog. Best-earning photos/videos &amp; price points.</p></div>
+    <div class="card"><span class="tag">who pays</span><h4>Whales &amp; patterns</h4><p>fans.totalSpend + tier; what mode/media converted each top spender.</p></div>
+    <div class="card"><span class="tag">timing</span><h4>Time-to-first-$</h4><p>firstSeenAt → first purchase ts; which session number tends to convert.</p></div>
+    <div class="card"><span class="tag">message → buy</span><h4>What was said</h4><p>Pull the messages right before a purchase to see the winning lines.</p></div>
+    <div class="card"><span class="tag">re-engagement</span><h4>Win-backs</h4><p>Did a gap + re-engage message lead to a return / purchase?</p></div>
+  </div>
+  <div class="note"><span class="l">how it runs</span>Firestore streams to <b>BigQuery</b> (export), where
+    these are plain SQL and <b>Looker Studio</b> dashboards. Firestore serves the live agent fast;
+    BigQuery serves heavy analytics without slowing it down.</div>
+</div></section>
+
+<!-- 12 RUN -->
+<section id="run"><div class="wrap col">
+  <div class="sec-no">12</div><h2>What runs where · models · setup</h2>
+  <table><thead><tr><th>GCP piece</th><th>Role</th></tr></thead><tbody>
+    <tr><td><b>Cloud Run service</b></td><td>Brain — router, agent, admin endpoints, media pipeline. Always on.</td></tr>
+    <tr><td><b>Cloud Scheduler</b></td><td>Cron → <code>/admin/reconcile</code> &amp; media sync</td></tr>
+    <tr><td><b>GCS + Eventarc</b></td><td>Media inbox → triggers upload pipeline</td></tr>
+    <tr><td><b>Firestore</b></td><td>fans, messages, purchases, catalog, events (live)</td></tr>
+    <tr><td><b>BigQuery</b></td><td>analytics warehouse (from Firestore export)</td></tr>
+    <tr><td><b>Qdrant</b></td><td>mem0 vector store (self-hosted)</td></tr>
+    <tr><td><b>Secret Manager</b></td><td>refresh token, client secret, webhook secret, OpenRouter key, sim secret</td></tr>
+  </tbody></table>
+  <h3>Models (all via OpenRouter — one key)</h3>
+  <table><thead><tr><th>Role</th><th>Model</th><th>Why</th></tr></thead><tbody>
+    <tr><td>Voice</td><td><b>x-ai/grok-4.3</b></td><td>Fully explicit on demand (tested); strong in-character</td></tr>
+    <tr><td>Mode classifier</td><td><b>mistralai/mistral-nemo</b></td><td>Fast, non-reasoning, clean JSON, permissive, correct escalation (tested)</td></tr>
+    <tr><td>Media vision</td><td>permissive vision model</td><td>Auto-describe photos (to test &amp; pick)</td></tr>
+    <tr><td>mem0 extraction</td><td>a cheap model</td><td>Fact extraction for memory</td></tr>
+  </tbody></table>
+  <div class="cards">
+    <div class="card"><span class="tag">ON FANVUE</span><h4>You configure</h4>
+      <ul><li>OAuth app + redirect URI</li><li>Webhook URL → Cloud Run</li><li>Events to send</li><li>One-time browser auth</li></ul></div>
+    <div class="card"><span class="tag">ON GCP</span><h4>We configure</h4>
+      <ul><li>Cloud Run deploy</li><li>Scheduler crons</li><li>GCS bucket + trigger</li><li>Firestore · BigQuery · Secret Manager</li></ul></div>
+  </div>
+  <div class="note"><span class="l">phases</span><b>Phase 1 (today):</b> run locally, test via
+    <code>/simulate</code> — no deploy, no webhooks. <b>Phase 2:</b> deploy to Cloud Run, wire webhook +
+    crons + media bucket, smoke-test with a Fanvue test account.</div>
+</div></section>
+
+<!-- 13 CI/CD -->
+<section id="cicd"><div class="wrap">
+  <div class="col"><div class="sec-no">13</div><h2>Ship pipeline — GitHub → tests → GCP</h2>
+    <p>Nothing reaches production without passing tests. Push to GitHub, GitHub Actions runs the full
+      test suite, and <b>only</b> a green run on <code>main</code> builds the container and deploys to
+      Cloud Run. No manual deploys.</p></div>
+  <div class="panel"><div class="scroll">
+    <svg class="d" viewBox="0 0 980 120" role="img" aria-label="CI/CD: push to GitHub, Actions runs lint and tests, on green main it builds and deploys to Cloud Run.">
+      <defs><marker id="arrc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--flow)"></path></marker></defs>
+      <rect class="node" x="8"   y="42" width="130" height="46" rx="9"></rect><text class="nlabel" x="73"  y="61">git push</text><text class="nsub" x="73" y="77">branch / PR</text>
+      <rect class="node" x="176" y="42" width="150" height="46" rx="9"></rect><text class="nlabel" x="251" y="61">CI: tests</text><text class="nsub" x="251" y="77">lint · pytest</text>
+      <polygon class="diamond" points="396,42 432,65 396,88 360,65"></polygon><text class="nsub" x="396" y="67">green?</text>
+      <rect class="node" x="476" y="42" width="150" height="46" rx="9"></rect><text class="nlabel" x="551" y="61">build image</text><text class="nsub" x="551" y="77">on main only</text>
+      <rect class="node" x="664" y="42" width="150" height="46" rx="9"></rect><text class="nlabel" x="739" y="61">Artifact Reg.</text><text class="nsub" x="739" y="77">push container</text>
+      <rect class="node term" x="852" y="42" width="120" height="46" rx="9"></rect><text class="nlabel inv" x="912" y="65">Cloud Run</text>
+      <path class="edge" d="M138 65 H176"></path><path class="edge" d="M326 65 H360"></path>
+      <path class="edge cond" d="M432 65 H476"></path><path class="edge" d="M626 65 H664"></path><path class="edge" d="M814 65 H852"></path>
+      <text class="elabel" x="440" y="56">yes</text>
+    </svg>
+  </div></div>
+  <div class="col">
+    <h3>Two workflows</h3>
+    <table><thead><tr><th>Workflow</th><th>Trigger</th><th>Does</th></tr></thead><tbody>
+      <tr><td><code>ci.yml</code></td><td>every push / PR</td><td>install, ruff lint, <b>pytest</b> (unit + tool + integration + e2e). Blocks merge if red.</td></tr>
+      <tr><td><code>deploy.yml</code></td><td>push to <code>main</code>, after CI green</td><td>build image → Artifact Registry → deploy Cloud Run (auth via Workload Identity Federation — no keys)</td></tr>
+    </tbody></table>
+    <h3>Test pyramid (what we write)</h3>
+    <div class="cards">
+      <div class="card"><span class="tag">unit</span><h4>Pure logic</h4><p>store filters (dedupe purchased, heat gate), cooldown math, session reset, mode-JSON parsing.</p></div>
+      <div class="card"><span class="tag">tool</span><h4>Deterministic tools</h4><p><code>offer_content</code>: not_now on cooldown, nothing on empty, sent on eligible, <b>never re-sells</b>; <code>send_teaser</code>.</p></div>
+      <div class="card"><span class="tag">integration</span><h4>DB &amp; router</h4><p>Firestore emulator read/write; event router maps each webhook to the right handler; idempotency.</p></div>
+      <div class="card"><span class="tag">e2e</span><h4>Agent (mocked LLM)</h4><p>Full graph with a fake model → verifies wiring, tool calls, sim/real isolation — offline, deterministic.</p></div>
+    </div>
+    <div class="note"><span class="l">why a fake LLM in e2e</span>The model's words are non-deterministic, but
+      the <em>wiring</em> isn't. A scripted fake model lets the whole graph run in CI, offline, proving
+      tools fire and the no-re-sell guarantee holds — every push.</div>
+  </div>
+</div></section>
+
+<footer>Jenny agent · system design v2 · Firestore + BigQuery · Qdrant/mem0 · LangGraph · OpenRouter (Grok 4.3 voice · Mistral-Nemo mode) · GitHub Actions → Cloud Run</footer>
