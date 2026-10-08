@@ -18,7 +18,7 @@ Full design: `../docs/jenny_system_design.html`.
 | `llm.py` | Voice model + classifier seams (injectable for tests) |
 | `router.py` | Event router: message→agent, payment→record+react, sub/follow→fan |
 | `fanvue_client.py` | Fanvue REST + OAuth refresh-token rotation |
-| `main.py` | FastAPI: `/webhook/fanvue`, `/simulate`, `/admin/reconcile`, `/healthz` |
+| `main.py` | FastAPI: `/webhook/fanvue`, `/simulate`, `/admin/reconcile`, `/health` |
 | `simulate.py` | Local end-to-end driver (synthetic fan, dry-run) |
 | `tests/` | unit · tool · router · offline e2e (fake LLM) |
 

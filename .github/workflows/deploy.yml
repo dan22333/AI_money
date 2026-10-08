@@ -74,7 +74,7 @@ jobs:
           CAND_URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
             --format=json | jq -r '.status.traffic[] | select(.tag=="candidate") | .url')
           echo "candidate URL: $CAND_URL"
-          curl -fsS "$CAND_URL/healthz" >/dev/null
+          curl -fsS "$CAND_URL/health" >/dev/null
           SIM=$(gcloud secrets versions access latest --secret=sim-secret --project "$PROJECT")
           REPLY=$(curl -fsS -X POST "$CAND_URL/simulate" \
             -H "x-sim-secret: $SIM" -H "content-type: application/json" \
