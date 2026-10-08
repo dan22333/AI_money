@@ -3,7 +3,9 @@
 /webhook/fanvue  — Fanvue pushes events here (verified, routed)
 /simulate        — test the agent with a synthetic fan (no Fanvue); sim-secret protected
 /admin/reconcile — called by Cloud Scheduler to backfill/repair from the API
-/healthz         — liveness
+/health          — liveness (NOT /healthz: Google Front End reserves /healthz
+                   on *.run.app and returns its own 404 before the request ever
+                   reaches the container)
 """
 from __future__ import annotations
 
@@ -19,8 +21,8 @@ from config import settings
 app = FastAPI(title="Jenny Agent", version="1.0.0")
 
 
-@app.get("/healthz")
-def healthz():
+@app.get("/health")
+def health():
     return {"ok": True, "voice": settings.MODEL, "mode_model": settings.MODE_MODEL}
 
 
