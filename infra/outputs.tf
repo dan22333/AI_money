@@ -9,5 +9,6 @@ output "deployer_sa" {
 }
 
 output "runtime_sa" {
-  value = local.runtime_sa
+  description = "Cloud Run runs as this (set via --service-account in deploy)"
+  value       = google_service_account.runtime.email
 }
