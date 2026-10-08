@@ -41,11 +41,24 @@ jobs:
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
-      # 1) Deploy the new revision with NO traffic + a preview tag.
-      - name: Deploy canary (no traffic)
+      # 1) Deploy the new revision with a preview tag.
+      #    On an EXISTING service we add --no-traffic so the candidate takes 0%
+      #    of live traffic (true canary). On the FIRST-EVER deploy the service
+      #    doesn't exist yet, and Cloud Run rejects --no-traffic ("not supported
+      #    when creating a new service") — so we omit it and let the first
+      #    revision serve 100%. Either way it also gets the `candidate` tag, so
+      #    the smoke test below can hit its stable preview URL before promotion.
+      - name: Deploy canary (no traffic if service exists)
         run: |
           SECRETS="OPENROUTER_API_KEY=openrouter-api-key:latest,OAUTH_CLIENT_SECRET=fanvue-client-secret:latest,FANVUE_WEBHOOK_SECRET=fanvue-webhook-secret:latest,SIM_SECRET=sim-secret:latest"
           ENVS="USE_FIRESTORE=true,GCP_PROJECT=${PROJECT},OPENROUTER_MODEL=x-ai/grok-4.3,MODE_MODEL=mistralai/mistral-nemo"
+          if gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
+            NO_TRAFFIC="--no-traffic"
+            echo "Service exists → deploying candidate at 0% traffic (canary)."
+          else
+            NO_TRAFFIC=""
+            echo "First-ever deploy → creating service; this revision serves 100%."
+          fi
           gcloud run deploy "$SERVICE" \
             --image "$IMAGE" \
             --project "$PROJECT" --region "$REGION" \
@@ -53,7 +66,7 @@ jobs:
             --service-account "jenny-runtime@${PROJECT}.iam.gserviceaccount.com" \
             --set-secrets "$SECRETS" \
             --set-env-vars "$ENVS" \
-            --no-traffic --tag candidate
+            $NO_TRAFFIC --tag candidate
 
       # 2) REAL-MODEL smoke test against the candidate — gates the cutover.
       - name: Smoke test candidate (real model)
