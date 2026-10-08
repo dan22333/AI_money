@@ -21,5 +21,12 @@ __pycache__/
 .venv/
 venv/
 
+# Terraform (never commit provider binaries or state; DO commit .terraform.lock.hcl)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+
 # OS
 .DS_Store
