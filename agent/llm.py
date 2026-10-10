@@ -35,6 +35,24 @@ def set_voice_model(model) -> None:
     _voice = model
 
 
+def complete(system: str, user: str, model: str | None = None, max_tokens: int = 220) -> str:
+    """One plain-text completion (used for the rolling conversation summary).
+
+    Uses the cheap classifier model by default. Tests monkeypatch this to avoid
+    the network.
+    """
+    body = {
+        "model": model or settings.MODE_MODEL,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+        "max_tokens": max_tokens, "temperature": 0.3,
+    }
+    r = httpx.post(f"{settings.OPENROUTER_BASE_URL}/chat/completions", json=body,
+                   headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"}, timeout=30)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"].strip()
+
+
 def classify_json(system: str, user: str, model: str | None = None) -> dict:
     """One JSON classification call (non-reasoning model). Returns parsed dict.
 

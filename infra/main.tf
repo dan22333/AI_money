@@ -1,13 +1,14 @@
 data "google_project" "p" {}
 
 locals {
-  jenny_secrets = ["openrouter-api-key", "fanvue-client-secret", "fanvue-webhook-secret", "sim-secret"]
+  jenny_secrets = ["openrouter-api-key", "fanvue-client-secret", "fanvue-webhook-secret",
+  "sim-secret", "jenny-pg-password"]
 
   apis = [
     "run.googleapis.com", "cloudbuild.googleapis.com", "artifactregistry.googleapis.com",
     "firestore.googleapis.com", "secretmanager.googleapis.com", "bigquery.googleapis.com",
     "cloudscheduler.googleapis.com", "iamcredentials.googleapis.com", "sts.googleapis.com",
-    "eventarc.googleapis.com",
+    "eventarc.googleapis.com", "sqladmin.googleapis.com", "aiplatform.googleapis.com",
   ]
 
   deployer_roles = [
@@ -74,6 +75,56 @@ resource "google_project_iam_member" "runtime_datastore" {
   role    = "roles/datastore.user"
   member  = "serviceAccount:${google_service_account.runtime.email}"
 }
+
+# Long-term memory needs: connect to Cloud SQL (pgvector) + call Vertex AI
+# embeddings. Both additive (_member) so we never clobber shared-project IAM.
+resource "google_project_iam_member" "runtime_cloudsql" {
+  project = var.project
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.runtime.email}"
+}
+
+resource "google_project_iam_member" "runtime_vertex" {
+  project = var.project
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.runtime.email}"
+}
+
+# Cloud SQL Postgres for the self-hosted mem0 vector store (pgvector).
+# Smallest tier; the memory workload is tiny (a few vectors per fan).
+resource "google_sql_database_instance" "jenny_pg" {
+  name             = "jenny-pg"
+  database_version = "POSTGRES_15"
+  region           = var.region
+  settings {
+    tier              = "db-f1-micro"
+    availability_type = "ZONAL"
+    disk_size         = 10
+    disk_autoresize   = true
+    ip_configuration {
+      ipv4_enabled = true # public IP; Cloud Run reaches it via the Cloud SQL socket
+    }
+    backup_configuration {
+      enabled = true
+    }
+  }
+  # Prevent accidental teardown of the fan-memory database.
+  deletion_protection = true
+}
+
+resource "google_sql_database" "jenny" {
+  name     = "jenny"
+  instance = google_sql_database_instance.jenny_pg.name
+}
+
+# NOTE: the `postgres` user's password is set out-of-band (gcloud) and stored in
+# the jenny-pg-password secret — kept out of TF state, like all other secrets.
+# One-time, after apply:
+#   gcloud sql users set-password postgres --instance=jenny-pg --password="$PW"
+#   printf '%s' "$PW" | gcloud secrets create jenny-pg-password --data-file=-
+# Then, once (enables pgvector; mem0 creates its own table):
+#   gcloud sql connect jenny-pg --user=postgres --database=jenny \
+#     -c 'CREATE EXTENSION IF NOT EXISTS vector;'
 
 # Secret access scoped to ONLY Jenny's secrets (resource-level, not project-wide).
 resource "google_secret_manager_secret_iam_member" "runtime_secrets" {

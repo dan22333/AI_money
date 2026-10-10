@@ -43,9 +43,20 @@ class Settings:
     # --- Persona ---
     PERSONA_PATH = os.environ.get("PERSONA_PATH", str(Path(__file__).resolve().parent / "persona.md"))
 
-    # --- Memory (mem0) ---
-    # If MEM0_API_KEY is set -> hosted mem0 platform. Else local/fallback.
-    MEM0_API_KEY = os.environ.get("MEM0_API_KEY", "")
+    # --- Long-term memory: SELF-HOSTED mem0 on our own Postgres/pgvector (no SaaS) ---
+    # mem0 runs in-process; facts embedded by Vertex AI (runtime SA, no key) and
+    # stored as vectors in Cloud SQL Postgres. Disabled by default (local/tests);
+    # the deploy turns it on. If anything fails it degrades to a no-op.
+    MEMORY_ENABLED = os.environ.get("MEMORY_ENABLED", "false").lower() == "true"
+    PG_INSTANCE = os.environ.get("PG_INSTANCE", "capsule-487202:us-central1:jenny-pg")
+    # Cloud Run reaches Cloud SQL over a unix socket at /cloudsql/<connection-name>.
+    PG_HOST = os.environ.get("PG_HOST", f"/cloudsql/{PG_INSTANCE}")
+    PG_DB = os.environ.get("PG_DB", "jenny")
+    PG_USER = os.environ.get("PG_USER", "postgres")
+    PG_PASSWORD = os.environ.get("PG_PASSWORD", "")
+    EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-004")
+    EMBED_DIM = int(os.environ.get("EMBED_DIM", "768"))
+    VERTEX_REGION = os.environ.get("VERTEX_REGION", "us-central1")
 
     # --- Message store (Firestore) ---
     GCP_PROJECT = os.environ.get("GCP_PROJECT", "capsule-487202")

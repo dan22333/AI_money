@@ -18,6 +18,7 @@ def clean_state():
     memory._fallback.clear()
     memory._USING_MEM0 = False
     memory._client = None
+    memory._INIT_DONE = False
     yield
     store.reset_memory()
 

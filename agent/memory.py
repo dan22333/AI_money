@@ -1,12 +1,21 @@
-"""Long-term fan memory via mem0 — the 'remembers things about you' layer.
+"""Long-term fan memory — the "remembers things about you" layer.
 
-mem0 takes conversation turns, uses an LLM to extract durable FACTS
-("his name is Mike, works night shifts, has a labrador, into tennis"),
-stores them in a vector DB, and lets us semantically recall the relevant
-ones for a given fan on each new message.
+SELF-HOSTED mem0 (no SaaS). mem0 runs in-process: it uses an LLM to extract
+durable FACTS from conversation turns ("his name is Mike, works night shifts,
+has a labrador, into tennis"), embeds them with Vertex AI, and stores the
+vectors in our own Cloud SQL Postgres (pgvector). On each new message we
+semantically recall the most relevant facts for that fan.
 
-If mem0 isn't configured yet, a simple in-memory fallback keeps the agent
-runnable so you can develop the rest of the pipeline.
+Wiring (all from config/env; no API keys for Google — the runtime SA's ADC):
+  - vector store : pgvector on Cloud SQL Postgres (unix socket /cloudsql/...)
+  - embedder     : Vertex AI text-embedding-004 (768-dim)
+  - fact LLM     : our existing OpenRouter voice model
+
+It only turns on when settings.MEMORY_ENABLED is true (the GCP deploy sets it).
+Locally and in CI it stays OFF, and a simple in-memory fallback keeps the agent
+fully runnable. If mem0 is enabled but anything fails (bad creds, DB down,
+provider mismatch), we log once and degrade to the same fallback — a memory
+outage must never break a reply.
 """
 from __future__ import annotations
 
@@ -17,36 +26,54 @@ from config import settings
 _client = None
 _fallback: dict[str, List[str]] = {}
 _USING_MEM0 = False
+_INIT_DONE = False
 
 
-def _init():
-    global _client, _USING_MEM0
-    if _client is not None or _USING_MEM0:
+def _mem0_config() -> dict:
+    """Build the self-hosted mem0 config from settings."""
+    return {
+        "vector_store": {
+            "provider": "pgvector",
+            "config": {
+                "dbname": settings.PG_DB,
+                "user": settings.PG_USER,
+                "password": settings.PG_PASSWORD,
+                "host": settings.PG_HOST,  # /cloudsql/<conn> socket dir on Cloud Run
+                "port": 5432,
+                "collection_name": "fan_memories",
+                "embedding_model_dims": settings.EMBED_DIM,
+            },
+        },
+        "embedder": {
+            "provider": "vertexai",
+            "config": {
+                "model": settings.EMBED_MODEL,  # text-embedding-004
+                "embedding_dims": settings.EMBED_DIM,
+            },
+        },
+        "llm": {
+            "provider": "openai",  # OpenRouter is OpenAI-compatible
+            "config": {
+                "model": settings.MODEL,
+                "openai_base_url": settings.OPENROUTER_BASE_URL,
+                "api_key": settings.OPENROUTER_API_KEY,
+            },
+        },
+    }
+
+
+def _init() -> None:
+    global _client, _USING_MEM0, _INIT_DONE
+    if _INIT_DONE:
         return
+    _INIT_DONE = True
+    if not settings.MEMORY_ENABLED:
+        return  # local/CI: stay on the in-memory fallback
     try:
-        if settings.MEM0_API_KEY:
-            from mem0 import MemoryClient  # hosted platform
-            _client = MemoryClient(api_key=settings.MEM0_API_KEY)
-        else:
-            # Self-hosted mem0, using OpenRouter for extraction. Embeddings use a
-            # local HF model so no extra provider key is needed for v1.
-            from mem0 import Memory
-            _client = Memory.from_config({
-                "llm": {
-                    "provider": "openai",
-                    "config": {
-                        "model": settings.MODEL,
-                        "openai_base_url": settings.OPENROUTER_BASE_URL,
-                        "api_key": settings.OPENROUTER_API_KEY,
-                    },
-                },
-                "embedder": {
-                    "provider": "huggingface",
-                    "config": {"model": "sentence-transformers/all-MiniLM-L6-v2"},
-                },
-            })
+        from mem0 import Memory
+        _client = Memory.from_config(_mem0_config())
         _USING_MEM0 = True
-    except Exception as e:  # pragma: no cover - fall back gracefully
+    except Exception as e:  # pragma: no cover - any failure degrades to fallback
         print(f"[memory] mem0 unavailable ({e}); using in-memory fallback.")
         _client = None
         _USING_MEM0 = False

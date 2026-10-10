@@ -9,5 +9,8 @@ terraform import google_artifact_registry_repository.jenny \
   "projects/capsule-487202/locations/us-central1/repositories/jenny" || true
 terraform import 'google_firestore_database.default' \
   "projects/capsule-487202/databases/(default)" || true
+# staging DB was created via gcloud before it was declared in TF — adopt it.
+terraform import 'google_firestore_database.staging' \
+  "projects/capsule-487202/databases/staging" || true
 
 echo "Imported. Now: terraform plan   (then terraform apply)"

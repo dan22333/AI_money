@@ -16,6 +16,7 @@ import llm
 import memory
 import modes
 import store
+import summary
 import tools
 from config import settings
 
@@ -117,6 +118,9 @@ def persist(state: State) -> dict:
     fan = store.get_fan(fan_id)
     fan["currentMode"] = state["mode"]
     fan["lastSeenAt"] = store._now().isoformat()
+    # refresh the rolling "story so far" every SUMMARIZE_AFTER messages
+    summary.maybe_update(fan, store.recent_messages(fan_id, limit=settings.SUMMARIZE_AFTER),
+                         store.message_count(fan_id))
     store.save_fan(fan)
     return {}
 

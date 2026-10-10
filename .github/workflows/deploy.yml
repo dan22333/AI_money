@@ -56,8 +56,11 @@ jobs:
       - name: Deploy candidate (no traffic if service exists)
         run: |
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${SERVICE}:${GITHUB_SHA::7}"
-          SECRETS="OPENROUTER_API_KEY=openrouter-api-key:latest,OAUTH_CLIENT_SECRET=fanvue-client-secret:latest,FANVUE_WEBHOOK_SECRET=fanvue-webhook-secret:latest,SIM_SECRET=sim-secret:latest"
-          ENVS="USE_FIRESTORE=true,GCP_PROJECT=${PROJECT},FIRESTORE_DATABASE=(default),SIM_FIRESTORE_DATABASE=staging,OPENROUTER_MODEL=x-ai/grok-4.3,MODE_MODEL=mistralai/mistral-nemo"
+          PG_INSTANCE="${PROJECT}:${REGION}:jenny-pg"
+          SECRETS="OPENROUTER_API_KEY=openrouter-api-key:latest,OAUTH_CLIENT_SECRET=fanvue-client-secret:latest,FANVUE_WEBHOOK_SECRET=fanvue-webhook-secret:latest,SIM_SECRET=sim-secret:latest,PG_PASSWORD=jenny-pg-password:latest"
+          # Long-term memory (self-hosted mem0 → Cloud SQL pgvector + Vertex embeddings).
+          # GOOGLE_CLOUD_* let the Vertex SDK pick up project/region from ADC.
+          ENVS="USE_FIRESTORE=true,GCP_PROJECT=${PROJECT},FIRESTORE_DATABASE=(default),SIM_FIRESTORE_DATABASE=staging,OPENROUTER_MODEL=x-ai/grok-4.3,MODE_MODEL=mistralai/mistral-nemo,MEMORY_ENABLED=true,PG_INSTANCE=${PG_INSTANCE},PG_DB=jenny,PG_USER=postgres,EMBED_MODEL=text-embedding-004,EMBED_DIM=768,VERTEX_REGION=${REGION},GOOGLE_CLOUD_PROJECT=${PROJECT},GOOGLE_CLOUD_LOCATION=${REGION}"
           if gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
             NO_TRAFFIC="--no-traffic"
             echo "Service exists → candidate at 0% traffic (canary)."
@@ -70,6 +73,7 @@ jobs:
             --project "$PROJECT" --region "$REGION" \
             --platform managed --allow-unauthenticated \
             --service-account "jenny-runtime@${PROJECT}.iam.gserviceaccount.com" \
+            --add-cloudsql-instances "$PG_INSTANCE" \
             --set-secrets "$SECRETS" \
             --set-env-vars "$ENVS" \
             $NO_TRAFFIC --tag candidate
