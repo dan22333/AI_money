@@ -107,4 +107,32 @@ def offer_content(theme: str, caption: str) -> str:
     return f"sent::{item['description']}::${price/100:.2f}"
 
 
-ALL_TOOLS = [send_message, save_fact, send_teaser, offer_content]
+@tool
+def offer_bundle(theme: str, caption: str) -> str:
+    """Offer a themed PAID bundle — a set of photos/videos sold together under one price
+    (e.g. 'girls night out', 'beach day'). You give the vibe + caption; the system picks the
+    best matching bundle, DROPS any items the fan already owns, adjusts the price for what's
+    left, and either sends it or declines. Use this instead of offer_content when a themed
+    package fits better than a single item.
+    Returns: 'sent::<title>::<price>::<n items>' | 'nothing' (no unowned bundle fits) | 'not_now' (bad timing)."""
+    ctx = _ctx.get()
+    fan_id, mode = ctx["fan_id"], ctx["mode"]
+    # same timing gates as a single paid offer
+    if store.MODE_LEVEL.get(mode, 1) < store.MODE_LEVEL["FLIRTY"]:
+        return "not_now"
+    if not ctx.get("monetize_ok"):
+        return "not_now"
+    if store.cooldown_active(fan_id):
+        return "not_now"
+    offer = store.best_bundle_offer(fan_id, mode, theme)
+    if not offer or not offer["items"]:
+        return "nothing"
+    ctx["outbox"].append({"type": "bundle", "bundleId": offer["bundleId"],
+                          "mediaUuids": offer["items"], "price_cents": offer["price_cents"],
+                          "caption": caption})
+    _send(caption, media_uuids=offer["items"], price_cents=offer["price_cents"])
+    store.record_offer(fan_id, offer["items"])  # record ALL members so none re-offered
+    return f"sent::{offer['title']}::${offer['price_cents']/100:.2f}::{len(offer['items'])}"
+
+
+ALL_TOOLS = [send_message, save_fact, send_teaser, offer_content, offer_bundle]

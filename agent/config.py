@@ -50,6 +50,11 @@ class Settings:
     # --- Message store (Firestore) ---
     GCP_PROJECT = os.environ.get("GCP_PROJECT", "capsule-487202")
     USE_FIRESTORE = os.environ.get("USE_FIRESTORE", "false").lower() == "true"
+    # Named databases (same project). Real fans use the default DB; synthetic
+    # `sim:` fans (/simulate, the canary smoke test) use a separate staging DB so
+    # test traffic never pollutes production data. See store.use_namespace_for().
+    FIRESTORE_DATABASE = os.environ.get("FIRESTORE_DATABASE", "(default)")
+    SIM_FIRESTORE_DATABASE = os.environ.get("SIM_FIRESTORE_DATABASE", "staging")
 
     # --- Fanvue ---
     FANVUE_API_BASE = os.environ.get("API_BASE_URL", "https://api.fanvue.com")

@@ -1,0 +1,28 @@
+[project]
+name = "jenny-agent"
+version = "1.0.0"
+description = "Jenny — Fanvue AI chat agent (LangGraph on Cloud Run)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "pydantic>=2.9",
+    "langgraph>=0.2.50",
+    "langchain-core>=0.3.20",
+    "langchain-openai>=0.2.10",
+    "mem0ai>=0.1.40",
+    "google-cloud-firestore>=2.19",
+    "google-cloud-secret-manager>=2.21",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.7",
+]
+
+# Not an installable package — just an app whose deps uv manages. This stops uv
+# from trying to build/install the project itself (there's no build backend).
+[tool.uv]
+package = false
