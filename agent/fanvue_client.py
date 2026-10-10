@@ -86,6 +86,21 @@ class FanvueClient:
         r.raise_for_status()
         return r.json().get("data", [])
 
+    def list_subscribers(self) -> list:
+        """Active subscribers. Used by the nightly reconcile to backfill fans."""
+        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/subscribers", headers=self._headers(),
+                      params={"status": "active"}, timeout=30)
+        r.raise_for_status()
+        return r.json().get("data", [])
+
+    def list_earnings(self, since: str | None = None) -> list:
+        """Recent earnings/purchases. Used by reconcile to repair missed webhooks."""
+        params = {"since": since} if since else {}
+        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/earnings", headers=self._headers(),
+                      params=params, timeout=30)
+        r.raise_for_status()
+        return r.json().get("data", [])
+
     def send_message(self, user_uuid: str, text: str,
                      media_uuids: Optional[List[str]] = None,
                      price_cents: Optional[int] = None) -> dict:

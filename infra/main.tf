@@ -122,6 +122,33 @@ resource "google_bigquery_dataset" "analytics" {
   location   = "US"
 }
 
+# Nightly reconcile: Cloud Scheduler POSTs /admin/reconcile so missed webhooks
+# (subscribers, payments) get repaired from the Fanvue API once a day. Created
+# only when reconcile_sim_secret is supplied at apply time; the secret value is
+# never committed (consistent with the no-secret-values-in-TF policy, though it
+# does transit TF state — provide via TF_VAR_reconcile_sim_secret).
+resource "google_cloud_scheduler_job" "nightly_reconcile" {
+  count     = var.reconcile_sim_secret == "" ? 0 : 1
+  name      = "jenny-nightly-reconcile"
+  region    = var.region
+  schedule  = "0 4 * * *" # 04:00 daily
+  time_zone = "Etc/UTC"
+
+  http_target {
+    http_method = "POST"
+    uri         = "${var.service_url}/admin/reconcile"
+    headers = {
+      "x-sim-secret" = var.reconcile_sim_secret
+      "Content-Type" = "application/json"
+    }
+    body = base64encode("{}")
+  }
+
+  retry_config {
+    retry_count = 2
+  }
+}
+
 # NOTE: Secret Manager secret VALUES are intentionally NOT managed by Terraform.
 # The secret resources were created via gcloud and their versions are managed by
 # gcloud/CI, so sensitive values never live in TF state.

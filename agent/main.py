@@ -65,5 +65,5 @@ def simulate(inp: SimulateIn, x_sim_secret: str | None = Header(default=None)):
 def reconcile(x_sim_secret: str | None = Header(default=None)):
     if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
-    # TODO Phase 2: pull /earnings, /subscribers, /insights/fans and upsert.
-    return {"status": "reconcile stub — wired in Phase 2"}
+    import reconcile as _reconcile
+    return _reconcile.run()

@@ -19,3 +19,20 @@ variable "repo_name" {
   default     = "jenny"
   description = "Artifact Registry repository id"
 }
+
+variable "service_url" {
+  type        = string
+  default     = "https://jenny-agent-x4zdyfvfia-uc.a.run.app"
+  description = "Cloud Run service URL (stable for the service; the nightly reconcile posts here)"
+}
+
+variable "reconcile_sim_secret" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = <<-EOT
+    Value of sim-secret, injected as the x-sim-secret header on the nightly
+    reconcile job. Provide at apply time (TF_VAR_reconcile_sim_secret=...), do
+    NOT commit it. If left empty the scheduler job is not created.
+  EOT
+}
