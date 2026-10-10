@@ -63,6 +63,12 @@ class Settings:
     OAUTH_CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "")
     OAUTH_TOKEN_URL = os.environ.get("OAUTH_TOKEN_URL", "https://auth.fanvue.com/oauth2/token")
     FANVUE_WEBHOOK_SECRET = os.environ.get("FANVUE_WEBHOOK_SECRET", "")
+    # OAuth token persistence: "file" (local dev) or "secret" (Secret Manager, on GCP).
+    # The refresh token rotates on every use, so on GCP we read/write it as new
+    # versions of the FANVUE_TOKENS_SECRET secret. The secret VALUE is created
+    # out-of-band by the one-time OAuth browser flow (scripts/fanvue_auth.py).
+    FANVUE_TOKENS_SOURCE = os.environ.get("FANVUE_TOKENS_SOURCE", "file")
+    FANVUE_TOKENS_SECRET = os.environ.get("FANVUE_TOKENS_SECRET", "fanvue-oauth-tokens")
 
     # Protects /simulate and /admin endpoints
     SIM_SECRET = os.environ.get("SIM_SECRET", "")

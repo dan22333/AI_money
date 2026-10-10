@@ -7,8 +7,13 @@ Token strategy (see docs/auth):
   - Refresh tokens are SINGLE-USE and rotate: every refresh returns a new one,
     which we persist immediately. Only ONE process should refresh at a time.
 
-For v1, tokens are read from .fanvue_tokens.json. On GCP, point this at Secret
-Manager instead (load_tokens/save_tokens are the only two methods to change).
+Token persistence has two backends, chosen by settings.FANVUE_TOKENS_SOURCE:
+  - "file"   — local dev: a JSON file (secrets/.fanvue_tokens.json).
+  - "secret" — on GCP: the token JSON lives in a Secret Manager secret
+    (settings.FANVUE_TOKENS_SECRET); a rotation writes a NEW secret version.
+    The runtime SA needs secretAccessor (read) and secretVersionAdder (write).
+If no token is present (e.g. the secret isn't created yet) `ready` is False and
+the agent just computes replies without sending — it never crashes.
 """
 from __future__ import annotations
 
@@ -28,17 +33,39 @@ class FanvueClient:
         self._access_expiry: float = 0.0
         self._load_tokens()
 
-    # ---- token persistence (swap these two for Secret Manager on GCP) ----
+    # ---- token persistence (file for dev, Secret Manager on GCP) ----
+    def _use_secret(self) -> bool:
+        return settings.FANVUE_TOKENS_SOURCE == "secret"
+
+    def _secret_name(self) -> str:
+        return f"projects/{settings.GCP_PROJECT}/secrets/{settings.FANVUE_TOKENS_SECRET}"
+
     def _load_tokens(self):
         try:
-            with open(settings.FANVUE_TOKENS_FILE) as f:
-                self._tokens = json.load(f)
+            if self._use_secret():
+                from google.cloud import secretmanager
+                client = secretmanager.SecretManagerServiceClient()
+                resp = client.access_secret_version(name=f"{self._secret_name()}/versions/latest")
+                payload = resp.payload.data.decode().strip()
+                self._tokens = json.loads(payload) if payload else {}
+            else:
+                with open(settings.FANVUE_TOKENS_FILE) as f:
+                    self._tokens = json.load(f)
         except Exception:
+            # missing/empty/unreadable → unconfigured; stay not-ready, never crash
             self._tokens = {}
 
     def _save_tokens(self):
-        with open(settings.FANVUE_TOKENS_FILE, "w") as f:
-            json.dump(self._tokens, f, indent=2)
+        if self._use_secret():
+            from google.cloud import secretmanager
+            client = secretmanager.SecretManagerServiceClient()
+            client.add_secret_version(
+                parent=self._secret_name(),
+                payload={"data": json.dumps(self._tokens).encode()},
+            )
+        else:
+            with open(settings.FANVUE_TOKENS_FILE, "w") as f:
+                json.dump(self._tokens, f, indent=2)
 
     @property
     def ready(self) -> bool:
