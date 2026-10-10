@@ -57,6 +57,9 @@ class Settings:
     EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-004")
     EMBED_DIM = int(os.environ.get("EMBED_DIM", "768"))
     VERTEX_REGION = os.environ.get("VERTEX_REGION", "us-central1")
+    # Base pgvector collection for real fans; sim traffic uses "<base>_sim"
+    # (staging isolation, mirrors the Firestore named-DB split).
+    MEMORY_COLLECTION = os.environ.get("MEMORY_COLLECTION", "fan_memories")
 
     # --- Message store (Firestore) ---
     GCP_PROJECT = os.environ.get("GCP_PROJECT", "capsule-487202")

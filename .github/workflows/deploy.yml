@@ -42,10 +42,43 @@ jobs:
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
 
+  # 1b) Migrate the pgvector DB (alembic upgrade head) via the Cloud SQL Auth
+  #     Proxy, BEFORE the candidate serves — so the `vector` extension (and any
+  #     tables we own) exist. mem0 still manages its own table. Runs against the
+  #     one `jenny` DB (sim + real collections share it), so a single upgrade
+  #     covers both namespaces.
+  migrate:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: alembic upgrade head
+        working-directory: agent
+        run: |
+          PG_INSTANCE="${PROJECT}:${REGION}:jenny-pg"
+          curl -sSLo cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.1/cloud-sql-proxy.linux.amd64
+          chmod +x cloud-sql-proxy
+          ./cloud-sql-proxy --port 5432 "$PG_INSTANCE" &
+          PROXY_PID=$!
+          for i in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null && { echo "proxy up"; break; }; sleep 1; done
+          uv sync --frozen
+          export PG_HOST=127.0.0.1 PG_USER=postgres PG_DB=jenny
+          export PG_PASSWORD="$(gcloud secrets versions access latest --secret=jenny-pg-password --project "$PROJECT")"
+          uv run alembic upgrade head
+          kill $PROXY_PID 2>/dev/null || true
+
   # 2) Deploy the new revision with 0% traffic + a `candidate` preview tag.
   #    (First-ever deploy omits --no-traffic, which Cloud Run rejects on create.)
   canary:
-    needs: build
+    needs: migrate
     runs-on: ubuntu-latest
     steps:
       - uses: google-github-actions/auth@v2
@@ -100,6 +133,12 @@ jobs:
             -d '{"text":"hey jenny, you around?"}' | jq -r '.reply // empty')
           echo "Jenny replied: $REPLY"
           test -n "$REPLY"   # fail (keep old revision live) if the real model produced no reply
+          # Memory gate: real write+read roundtrip in the STAGING collection.
+          # memcheck returns 503 if memory is enabled-but-broken (curl -f fails),
+          # so a silently-degraded memory layer can't be promoted.
+          MEM=$(curl -fsS -X POST "$CAND_URL/admin/memcheck" -H "x-sim-secret: $SIM" | jq -r '.status')
+          echo "memcheck status: $MEM"
+          test "$MEM" = "ok" -o "$MEM" = "disabled"
 
   # 4) Only now shift 100% of traffic to the verified revision.
   promote:

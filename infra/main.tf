@@ -14,6 +14,7 @@ locals {
   deployer_roles = [
     "roles/run.admin", "roles/cloudbuild.builds.editor", "roles/artifactregistry.writer",
     "roles/iam.serviceAccountUser", "roles/storage.admin", "roles/serviceusage.serviceUsageConsumer",
+    "roles/cloudsql.client", # deploy's migrate job connects via the Cloud SQL Auth Proxy
   ]
 }
 
@@ -138,6 +139,13 @@ resource "google_secret_manager_secret_iam_member" "runtime_secrets" {
 # the canary revision before shifting traffic.
 resource "google_secret_manager_secret_iam_member" "deployer_sim_secret" {
   secret_id = "sim-secret"
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.deployer.email}"
+}
+
+# The deploy migrate job reads the Postgres password to run alembic.
+resource "google_secret_manager_secret_iam_member" "deployer_pg_password" {
+  secret_id = "jenny-pg-password"
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.deployer.email}"
 }

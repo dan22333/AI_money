@@ -67,3 +67,22 @@ def reconcile(x_sim_secret: str | None = Header(default=None)):
         raise HTTPException(status_code=401, detail="unauthorized")
     # TODO Phase 2: pull /earnings, /subscribers, /insights/fans and upsert.
     return {"status": "reconcile stub — wired in Phase 2"}
+
+
+@app.post("/admin/memcheck")
+def memcheck(x_sim_secret: str | None = Header(default=None)):
+    """Real memory write+read roundtrip in the STAGING collection. The canary
+    calls this and fails promotion if memory is enabled but broken. 503 on error
+    so a bad memory layer never reaches production traffic."""
+    if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    import memory
+    import store
+    store.use_namespace_for("sim:__memcheck__")  # staging collection only
+    try:
+        result = memory.selftest()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"memory selftest raised: {e}")
+    if result.get("status") == "error":
+        raise HTTPException(status_code=503, detail=result.get("detail", "memory selftest failed"))
+    return result

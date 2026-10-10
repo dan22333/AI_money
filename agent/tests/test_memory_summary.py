@@ -11,12 +11,11 @@ from config import settings
 def test_memory_falls_back_when_disabled(monkeypatch):
     # MEMORY_ENABLED defaults false → mem0 never initializes, fallback is used.
     monkeypatch.setattr(settings, "MEMORY_ENABLED", False)
-    memory._INIT_DONE = False
     memory.add_fact("sim:fan", "his name is Mike")
     memory.add_turn("sim:fan", "i work night shifts", "aww that's rough babe")
     out = memory.recall("sim:fan", "what do we know")
     assert "Mike" in out
-    assert not memory._USING_MEM0  # stayed on fallback, never touched mem0
+    assert memory._clients == {}  # disabled → never built a mem0 client
 
 
 def test_recall_empty_message():
