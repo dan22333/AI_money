@@ -8,6 +8,7 @@ on:
     branches: ["**"]
 
 jobs:
+  # Fast, offline, in-memory store. Gates every push/PR.
   test:
     runs-on: ubuntu-latest
     defaults:
@@ -16,21 +17,68 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"
-          cache: pip
+          enable-cache: true
 
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Install deps (from uv.lock)
+        run: uv sync --frozen
 
       - name: Lint (ruff)
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Tests (pytest)
         env:
           USE_FIRESTORE: "false"
           OPENROUTER_API_KEY: "test-key-not-used"   # tests mock the network
-        run: pytest
+        run: uv run pytest
+
+  # Integration: the SAME store code against a real Firestore, via the emulator.
+  # Catches query/field/client bugs the in-memory backend can't. No cloud, no cost.
+  firestore-it:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install deps (from uv.lock)
+        run: uv sync --frozen
+
+      - name: Set up Java (Firestore emulator needs a Java 21+ JRE)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Install Firestore emulator
+        run: gcloud components install cloud-firestore-emulator beta --quiet
+
+      - name: Tests against Firestore emulator
+        env:
+          USE_FIRESTORE: "true"
+          GCP_PROJECT: "test-emulator"
+          # the emulator serves one database; point both namespaces at it
+          FIRESTORE_DATABASE: "(default)"
+          SIM_FIRESTORE_DATABASE: "(default)"
+          OPENROUTER_API_KEY: "test-key-not-used"
+        run: |
+          gcloud beta emulators firestore start --host-port=127.0.0.1:8085 &
+          EMU_PID=$!
+          # wait until the emulator is accepting connections
+          for i in $(seq 1 60); do
+            if curl -s 127.0.0.1:8085 >/dev/null 2>&1; then echo "emulator up"; break; fi
+            sleep 1
+          done
+          export FIRESTORE_EMULATOR_HOST=127.0.0.1:8085
+          uv run pytest -m firestore
+          kill $EMU_PID 2>/dev/null || true

@@ -39,6 +39,15 @@ resource "google_firestore_database" "default" {
   }
 }
 
+# Isolated DB for synthetic `sim:` traffic (/simulate + the canary smoke test),
+# so test data never touches the production (default) database. Same project,
+# so the runtime SA's project-level datastore.user already covers it.
+resource "google_firestore_database" "staging" {
+  name        = "staging"
+  location_id = var.region
+  type        = "FIRESTORE_NATIVE"
+}
+
 # ---- new resources TF creates ----
 resource "google_service_account" "deployer" {
   account_id   = "jenny-deployer"

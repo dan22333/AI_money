@@ -51,7 +51,7 @@ jobs:
       - name: Deploy canary (no traffic if service exists)
         run: |
           SECRETS="OPENROUTER_API_KEY=openrouter-api-key:latest,OAUTH_CLIENT_SECRET=fanvue-client-secret:latest,FANVUE_WEBHOOK_SECRET=fanvue-webhook-secret:latest,SIM_SECRET=sim-secret:latest"
-          ENVS="USE_FIRESTORE=true,GCP_PROJECT=${PROJECT},OPENROUTER_MODEL=x-ai/grok-4.3,MODE_MODEL=mistralai/mistral-nemo"
+          ENVS="USE_FIRESTORE=true,GCP_PROJECT=${PROJECT},FIRESTORE_DATABASE=(default),SIM_FIRESTORE_DATABASE=staging,OPENROUTER_MODEL=x-ai/grok-4.3,MODE_MODEL=mistralai/mistral-nemo"
           if gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
             NO_TRAFFIC="--no-traffic"
             echo "Service exists → deploying candidate at 0% traffic (canary)."

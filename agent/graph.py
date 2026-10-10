@@ -77,8 +77,10 @@ def load_context(state: State) -> dict:
         + f"\n\n--- WHAT YOU REMEMBER (use naturally) ---\n{facts}"
         + f"\n\n--- STORY SO FAR ---\n{summary}"
         + f"\n\n--- MODE ---\n{modes.mode_directive(mode)}"
-        + "\n\nTo send a free teaser use send_teaser(theme, caption). To sell paid content use "
-          "offer_content(theme, caption) — it decides if/what/price, you just give the vibe. "
+        + "\n\nTo send a free teaser use send_teaser(theme, caption). To sell a single paid item use "
+          "offer_content(theme, caption). To sell a themed PACKAGE of several items under one price "
+          "(e.g. a 'girls night out' set) use offer_bundle(theme, caption). The selling tools decide "
+          "if/what/price — you just give the vibe + caption. "
           "Save new facts with save_fact. Keep messages short and human. You are a real person, never an AI."
     ))
     msgs: list = [system]
@@ -139,6 +141,7 @@ GRAPH = build_graph()
 
 
 def handle_message(fan_id: str, user_uuid: str, text: str, dry_run: bool = False) -> dict:
+    store.use_namespace_for(fan_id)  # sim: fans → staging DB, real fans → prod DB
     tools.set_context(fan_id=fan_id, user_uuid=user_uuid, dry_run=dry_run)
     result = GRAPH.invoke({"messages": [], "fan_id": fan_id, "user_uuid": user_uuid,
                            "incoming": text, "mode": "COLD", "monetize_ok": False,

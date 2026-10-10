@@ -48,6 +48,7 @@ def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: b
         media = data.get("mediaUuids", [])
         msg_uuid = data.get("messageUuid", "")
         if fan:
+            store.use_namespace_for(fan)
             store.add_purchase(fan, invoice, gross_cents=gross, source=source,
                                media_uuids=media, message_uuid=msg_uuid)
             if proactive_on_purchase:
@@ -60,6 +61,7 @@ def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: b
         sub = data.get("subscriber", data.get("sender", {}))
         fan = sub.get("uuid") or data.get("subscriberUuid")
         if fan:
+            store.use_namespace_for(fan)
             f = store.get_fan(fan)
             f["subscriptionStatus"] = "active"
             f["subscribedAt"] = store._now().isoformat()
@@ -70,6 +72,7 @@ def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: b
         follower = data.get("follower", data.get("sender", {}))
         fan = follower.get("uuid")
         if fan:
+            store.use_namespace_for(fan)
             store.get_fan(fan)
         return {"status": "follower_added"}
 

@@ -26,11 +26,10 @@ Full design: `../docs/jenny_system_design.html`.
 
 ```bash
 cd agent
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python simulate.py                      # scripted escalating convo (real models, dry-run)
+uv sync                                 # creates .venv from uv.lock (Python 3.12)
+uv run python simulate.py               # scripted escalating convo (real models, dry-run)
 # or serve it:
-uvicorn main:app --reload --port 8080
+uv run uvicorn main:app --reload --port 8080
 curl -s localhost:8080/simulate -H 'content-type: application/json' \
      -d '{"text":"hey jenny"}' | python -m json.tool
 ```
@@ -38,12 +37,22 @@ curl -s localhost:8080/simulate -H 'content-type: application/json' \
 ## Test
 
 ```bash
-pip install -r requirements-dev.txt
-ruff check . && pytest        # what CI runs
+uv run ruff check . && uv run pytest        # fast, offline, in-memory — what the CI `test` job runs
 ```
 
 Tests are offline/deterministic — the e2e suite injects a fake voice model, so the
 whole graph runs in CI without network or spend, proving wiring + the no-re-sell guarantee.
+
+To exercise the **real Firestore code path** against the local emulator (the CI
+`firestore-it` job does this automatically; needs a Java 21+ JRE + the emulator component):
+
+```bash
+gcloud components install cloud-firestore-emulator
+gcloud beta emulators firestore start --host-port=127.0.0.1:8085 &
+USE_FIRESTORE=true GCP_PROJECT=test-emulator \
+  FIRESTORE_DATABASE='(default)' SIM_FIRESTORE_DATABASE='(default)' \
+  FIRESTORE_EMULATOR_HOST=127.0.0.1:8085 uv run pytest -m firestore
+```
 
 ## Config (`../.env.local` locally; Secret Manager + env in prod)
 
