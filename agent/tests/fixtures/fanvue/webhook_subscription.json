@@ -1,0 +1,7 @@
+{
+  "type": "creator.subscription.activated",
+  "id": "evt_sub_001",
+  "data": {
+    "subscriber": { "uuid": "fan-new-555", "displayName": "Dave" }
+  }
+}

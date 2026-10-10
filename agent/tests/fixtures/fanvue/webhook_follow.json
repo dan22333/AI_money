@@ -1,0 +1,7 @@
+{
+  "type": "creator.follow.created",
+  "id": "evt_follow_001",
+  "data": {
+    "follower": { "uuid": "fan-follow-777" }
+  }
+}

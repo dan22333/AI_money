@@ -1,0 +1,8 @@
+{
+  "type": "creator.message.received",
+  "id": "evt_msg_001",
+  "data": {
+    "sender": { "uuid": "fan-abc-123", "displayName": "Mike" },
+    "message": { "text": "heyy just subscribed, i'm Mike 🙂", "uuid": "msg-001" }
+  }
+}

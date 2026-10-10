@@ -10,16 +10,15 @@ from typing import Optional
 import graph
 import store
 
-_processed: set[str] = set()  # idempotency (in-memory; Firestore in prod)
-
 
 def already_processed(event_id: Optional[str]) -> bool:
+    """Durable, cross-instance dedup via store.claim_event (Firestore atomic
+    create in prod). Returns True if this event was already handled.
+
+    Note: events without an id can't be deduped — Fanvue always sends one."""
     if not event_id:
         return False
-    if event_id in _processed:
-        return True
-    _processed.add(event_id)
-    return False
+    return not store.claim_event(event_id)
 
 
 def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: bool = True) -> dict:

@@ -47,6 +47,7 @@ CATALOG = "catalog"
 BUNDLES = "bundles"
 MESSAGES = "messages"
 PURCHASES = "purchases"
+PROCESSED = "processed_events"  # webhook idempotency ledger
 
 
 def _now() -> datetime:  # overridable in tests
@@ -76,6 +77,14 @@ class MemoryBackend:
 
     def set(self, col: str, doc_id: str, data: dict) -> None:
         self._docs.setdefault(col, {})[_docid(doc_id)] = copy.deepcopy(data)
+
+    def create_if_absent(self, col: str, doc_id: str, data: dict) -> bool:
+        bucket = self._docs.setdefault(col, {})
+        key = _docid(doc_id)
+        if key in bucket:
+            return False
+        bucket[key] = copy.deepcopy(data)
+        return True
 
     def list(self, col: str) -> List[dict]:
         return [copy.deepcopy(d) for d in self._docs.get(col, {}).values()]
@@ -137,6 +146,17 @@ class FirestoreBackend:
     def set(self, col, doc_id, data):
         self.db.collection(col).document(_docid(doc_id)).set(data)
 
+    def create_if_absent(self, col, doc_id, data) -> bool:
+        """Atomic create: True if we created it, False if it already existed.
+        Firestore's create() is a transaction (fails if the doc exists), so this
+        is safe across concurrent Cloud Run instances."""
+        from google.api_core.exceptions import AlreadyExists
+        try:
+            self.db.collection(col).document(_docid(doc_id)).create(data)
+            return True
+        except AlreadyExists:
+            return False
+
     def list(self, col):
         return [s.to_dict() for s in self.db.collection(col).stream()]
 
@@ -186,7 +206,7 @@ class FirestoreBackend:
                         for s in doc.collection(sub).list_documents():
                             s.delete()
                     doc.delete()
-            for col in (CATALOG, BUNDLES):
+            for col in (CATALOG, BUNDLES, PROCESSED):
                 for doc in db.collection(col).list_documents():
                     doc.delete()
 
@@ -290,6 +310,17 @@ def add_purchase(fan_id: str, invoice_id: str, *, gross_cents: int, source: str,
 
 def purchased_uuids(fan_id: str) -> List[str]:
     return list(get_fan(fan_id).get("purchasedUuids", []))
+
+
+# ---------------- webhook idempotency ----------------
+def claim_event(event_id: str) -> bool:
+    """Atomically claim a webhook event id. Returns True if this is the FIRST
+    time we've seen it (caller should process), False if already processed.
+
+    Backed by Firestore's atomic create() in prod, so it's durable across
+    restarts and correct across concurrent Cloud Run instances — unlike the old
+    in-process set which reset on every cold start and wasn't shared."""
+    return _backend().create_if_absent(PROCESSED, event_id, {"ts": _now().isoformat()})
 
 
 # ---------------- catalog ----------------
@@ -416,7 +447,14 @@ def cooldown_active(fan_id: str) -> bool:
 
 def record_offer(fan_id: str, media_uuids) -> None:
     """Record one or more media as offered (so they're not re-offered) and bump the
-    per-session offer counter / PPV cooldown once."""
+    per-session offer counter / PPV cooldown once.
+
+    KNOWN LIMITATION (same-fan race): the check (cooldown_active in tools) and
+    this write are a non-transactional read-modify-write on the fan doc. Two
+    near-simultaneous messages from the same fan on different Cloud Run instances
+    can both pass the gate before either records → one extra offer. Blast radius
+    is tiny (MAX_OFFERS_PER_SESSION caps it) so we accept it for now; the correct
+    fix is a Firestore transaction spanning cooldown-check + record_offer."""
     if isinstance(media_uuids, str):
         media_uuids = [media_uuids]
     fan = get_fan(fan_id)
