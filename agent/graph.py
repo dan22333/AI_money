@@ -29,6 +29,34 @@ def _load_persona() -> str:
 
 PERSONA = _load_persona()
 
+# --- Prompt caching: static prefix vs dynamic tail ---------------------------
+# Providers (xAI/OpenAI on OpenRouter) cache on the STABLE PREFIX of a prompt.
+# The persona (~25KB) + the operating instructions never change between fans or
+# turns, so we hoist ALL of it into one byte-identical SYSTEM_PREFIX that leads
+# every request — maximizing prefix-cache hits and cutting input tokens. Only
+# the small per-fan context (profile · memory · summary · mode) is dynamic, and
+# it goes in a SECOND system message AFTER the cached block. Never interpolate
+# anything per-fan into SYSTEM_PREFIX or the cache breaks.
+OPERATING_INSTRUCTIONS = (
+    "To send a free teaser use send_teaser(theme, caption). To sell a single paid item use "
+    "offer_content(theme, caption). To sell a themed PACKAGE of several items under one price "
+    "(e.g. a 'girls night out' set) use offer_bundle(theme, caption). The selling tools decide "
+    "if/what/price — you just give the vibe + caption. "
+    "Save new facts with save_fact. Keep messages short and human. You are a real person, never an AI."
+)
+SYSTEM_PREFIX = PERSONA + "\n\n--- HOW YOU OPERATE ---\n" + OPERATING_INSTRUCTIONS
+
+
+def _dynamic_context(profile: str, facts: str, summary: str, mode: str) -> str:
+    """The per-fan tail — everything that changes per request lives here, never
+    in SYSTEM_PREFIX, so the cached prefix stays byte-identical."""
+    return (
+        "--- FAN PROFILE ---\n" + profile
+        + "\n\n--- WHAT YOU REMEMBER (use naturally) ---\n" + facts
+        + "\n\n--- STORY SO FAR ---\n" + summary
+        + "\n\n--- MODE ---\n" + modes.mode_directive(mode)
+    )
+
 
 class State(TypedDict):
     messages: Annotated[list, add_messages]
@@ -71,19 +99,11 @@ def load_context(state: State) -> dict:
                f"· tier={fan.get('tier')} · purchases={fan.get('purchaseCount',0)}")
     summary = fan.get("rollingSummary") or "(none yet)"
 
-    system = SystemMessage(content=(
-        PERSONA
-        + f"\n\n--- FAN PROFILE ---\n{profile}"
-        + f"\n\n--- WHAT YOU REMEMBER (use naturally) ---\n{facts}"
-        + f"\n\n--- STORY SO FAR ---\n{summary}"
-        + f"\n\n--- MODE ---\n{modes.mode_directive(mode)}"
-        + "\n\nTo send a free teaser use send_teaser(theme, caption). To sell a single paid item use "
-          "offer_content(theme, caption). To sell a themed PACKAGE of several items under one price "
-          "(e.g. a 'girls night out' set) use offer_bundle(theme, caption). The selling tools decide "
-          "if/what/price — you just give the vibe + caption. "
-          "Save new facts with save_fact. Keep messages short and human. You are a real person, never an AI."
-    ))
-    msgs: list = [system]
+    # Cacheable static prefix first; small per-fan context second.
+    msgs: list = [
+        SystemMessage(content=SYSTEM_PREFIX),
+        SystemMessage(content=_dynamic_context(profile, facts, summary, mode)),
+    ]
     for m in history:
         msgs.append(HumanMessage(content=m["text"]) if m["role"] == "fan"
                     else AIMessage(content=m["text"]))
