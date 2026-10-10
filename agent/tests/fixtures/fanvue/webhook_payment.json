@@ -1,0 +1,12 @@
+{
+  "type": "creator.payment.succeeded",
+  "id": "evt_pay_001",
+  "data": {
+    "buyer": { "uuid": "fan-abc-123" },
+    "invoiceId": "FV-INV-9001",
+    "grossCents": 1500,
+    "source": "message",
+    "mediaUuids": ["media-xyz-1"],
+    "messageUuid": "msg-ppv-77"
+  }
+}
