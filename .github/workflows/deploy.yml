@@ -1,60 +1,67 @@
 name: Deploy
 
 # Deploys ONLY after CI succeeds on main. Never on a red build, never on branches.
+# Four chained jobs (build → canary → smoke → promote) so the Actions "graph" view
+# renders the pipeline as a DAG and each stage is its own pass/fail node.
 on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
     branches: [main]
 
+permissions:
+  contents: read
+  id-token: write            # Workload Identity Federation (no JSON keys)
+
+env:
+  PROJECT: ${{ secrets.GCP_PROJECT }}
+  REGION: ${{ secrets.GCP_REGION }}
+  REPO: jenny
+  SERVICE: jenny-agent
+
 jobs:
-  deploy:
+  # 1) Build the image in the runner and push to Artifact Registry.
+  build:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write            # Workload Identity Federation (no JSON keys)
-    env:
-      PROJECT: ${{ secrets.GCP_PROJECT }}
-      REGION: ${{ secrets.GCP_REGION }}
-      REPO: jenny
-      SERVICE: jenny-agent
+    outputs:
+      image: ${{ steps.build.outputs.image }}
     steps:
       - uses: actions/checkout@v4
-
-      - id: auth
-        uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
-
       - uses: google-github-actions/setup-gcloud@v2
-
-      # Build in the runner with Docker (runners have it) and push straight to
-      # Artifact Registry. Avoids Cloud Build + its default-logs-bucket permission
-      # issue, and is faster. The deployer SA has artifactregistry.writer.
-      - name: Build & push image
+      - id: build
+        name: Build & push image
         run: |
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${SERVICE}:${GITHUB_SHA::7}"
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      # 1) Deploy the new revision with a preview tag.
-      #    On an EXISTING service we add --no-traffic so the candidate takes 0%
-      #    of live traffic (true canary). On the FIRST-EVER deploy the service
-      #    doesn't exist yet, and Cloud Run rejects --no-traffic ("not supported
-      #    when creating a new service") — so we omit it and let the first
-      #    revision serve 100%. Either way it also gets the `candidate` tag, so
-      #    the smoke test below can hit its stable preview URL before promotion.
-      - name: Deploy canary (no traffic if service exists)
+  # 2) Deploy the new revision with 0% traffic + a `candidate` preview tag.
+  #    (First-ever deploy omits --no-traffic, which Cloud Run rejects on create.)
+  canary:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Deploy candidate (no traffic if service exists)
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
         run: |
           SECRETS="OPENROUTER_API_KEY=openrouter-api-key:latest,OAUTH_CLIENT_SECRET=fanvue-client-secret:latest,FANVUE_WEBHOOK_SECRET=fanvue-webhook-secret:latest,SIM_SECRET=sim-secret:latest"
           ENVS="USE_FIRESTORE=true,GCP_PROJECT=${PROJECT},FIRESTORE_DATABASE=(default),SIM_FIRESTORE_DATABASE=staging,OPENROUTER_MODEL=x-ai/grok-4.3,MODE_MODEL=mistralai/mistral-nemo"
           if gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
             NO_TRAFFIC="--no-traffic"
-            echo "Service exists → deploying candidate at 0% traffic (canary)."
+            echo "Service exists → candidate at 0% traffic (canary)."
           else
             NO_TRAFFIC=""
             echo "First-ever deploy → creating service; this revision serves 100%."
@@ -68,7 +75,16 @@ jobs:
             --set-env-vars "$ENVS" \
             $NO_TRAFFIC --tag candidate
 
-      # 2) REAL-MODEL smoke test against the candidate — gates the cutover.
+  # 3) REAL-MODEL smoke test against the candidate — gates the cutover.
+  smoke:
+    needs: canary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
       - name: Smoke test candidate (real model)
         run: |
           CAND_URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
@@ -82,7 +98,15 @@ jobs:
           echo "Jenny replied: $REPLY"
           test -n "$REPLY"   # fail (keep old revision live) if the real model produced no reply
 
-      # 3) Only now shift 100% of traffic to the verified revision.
-      - name: Promote candidate
-        run: |
-          gcloud run services update-traffic "$SERVICE" --project "$PROJECT" --region "$REGION" --to-latest
+  # 4) Only now shift 100% of traffic to the verified revision.
+  promote:
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Promote candidate to 100%
+        run: gcloud run services update-traffic "$SERVICE" --project "$PROJECT" --region "$REGION" --to-latest
