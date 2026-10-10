@@ -1,7 +1,11 @@
 data "google_project" "p" {}
 
 locals {
-  jenny_secrets = ["openrouter-api-key", "fanvue-client-secret", "fanvue-webhook-secret", "sim-secret"]
+  # NOTE: secret VALUES are created out-of-band (see the "secret values not in TF"
+  # convention below). fanvue-oauth-tokens holds the rotating OAuth refresh/access
+  # token JSON, written by the one-time OAuth browser flow (scripts/fanvue_auth.py)
+  # and then rotated by the running service.
+  jenny_secrets = ["openrouter-api-key", "fanvue-client-secret", "fanvue-webhook-secret", "sim-secret", "fanvue-oauth-tokens"]
 
   apis = [
     "run.googleapis.com", "cloudbuild.googleapis.com", "artifactregistry.googleapis.com",
@@ -80,6 +84,14 @@ resource "google_secret_manager_secret_iam_member" "runtime_secrets" {
   for_each  = toset(local.jenny_secrets)
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.runtime.email}"
+}
+
+# The runtime rotates the Fanvue OAuth token (single-use refresh tokens), so it
+# must be able to ADD new versions of fanvue-oauth-tokens, not just read it.
+resource "google_secret_manager_secret_iam_member" "runtime_fanvue_tokens_writer" {
+  secret_id = "fanvue-oauth-tokens"
+  role      = "roles/secretmanager.secretVersionAdder"
   member    = "serviceAccount:${google_service_account.runtime.email}"
 }
 
