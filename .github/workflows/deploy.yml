@@ -20,12 +20,14 @@ env:
   SERVICE: jenny-agent
 
 jobs:
+  # The image tag is deterministic from the commit SHA, so every job recomputes it
+  # locally. (It can't be a job output: the tag embeds the PROJECT/REGION secrets,
+  # and GitHub scrubs secret values out of job outputs → they'd arrive empty.)
+
   # 1) Build the image in the runner and push to Artifact Registry.
   build:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.build.outputs.image }}
     steps:
       - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v2
@@ -33,14 +35,12 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
       - uses: google-github-actions/setup-gcloud@v2
-      - id: build
-        name: Build & push image
+      - name: Build & push image
         run: |
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${SERVICE}:${GITHUB_SHA::7}"
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
   # 2) Deploy the new revision with 0% traffic + a `candidate` preview tag.
   #    (First-ever deploy omits --no-traffic, which Cloud Run rejects on create.)
@@ -54,9 +54,8 @@ jobs:
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
       - uses: google-github-actions/setup-gcloud@v2
       - name: Deploy candidate (no traffic if service exists)
-        env:
-          IMAGE: ${{ needs.build.outputs.image }}
         run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/${SERVICE}:${GITHUB_SHA::7}"
           SECRETS="OPENROUTER_API_KEY=openrouter-api-key:latest,OAUTH_CLIENT_SECRET=fanvue-client-secret:latest,FANVUE_WEBHOOK_SECRET=fanvue-webhook-secret:latest,SIM_SECRET=sim-secret:latest"
           ENVS="USE_FIRESTORE=true,GCP_PROJECT=${PROJECT},FIRESTORE_DATABASE=(default),SIM_FIRESTORE_DATABASE=staging,OPENROUTER_MODEL=x-ai/grok-4.3,MODE_MODEL=mistralai/mistral-nemo"
           if gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
