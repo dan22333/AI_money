@@ -14,6 +14,11 @@ dependencies = [
     "mem0ai>=0.1.40",
     "google-cloud-firestore>=2.19",
     "google-cloud-secret-manager>=2.21",
+    # self-hosted memory: pgvector store (psycopg2) + Vertex AI embeddings
+    "psycopg2-binary>=2.9",
+    "google-cloud-aiplatform>=1.60",
+    # schema migrations for the pgvector DB (extension bootstrap + our tables)
+    "alembic>=1.13",
 ]
 
 [dependency-groups]

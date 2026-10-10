@@ -16,8 +16,7 @@ def clean_state():
     """Fresh in-memory stores for every test."""
     store.reset_memory()
     memory._fallback.clear()
-    memory._USING_MEM0 = False
-    memory._client = None
+    memory._clients.clear()
     yield
     store.reset_memory()
 

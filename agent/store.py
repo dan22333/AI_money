@@ -212,7 +212,8 @@ def _default_fan(fan_id: str) -> dict:
         "fanUuid": fan_id, "firstSeenAt": _now().isoformat(), "lastSeenAt": None,
         "subscriptionStatus": "unknown", "totalSpendCents": 0, "purchaseCount": 0,
         "tier": "new", "currentMode": "COLD", "currentSessionId": None, "sessionCount": 0,
-        "rollingSummary": "", "purchasedUuids": [], "recentlyOfferedUuids": [],
+        "rollingSummary": "", "summarizedAtCount": 0,
+        "purchasedUuids": [], "recentlyOfferedUuids": [],
         "lastPpvAt": None, "offersThisSession": 0,
         "source": "sim" if fan_id.startswith("sim:") else "fanvue",
     }
