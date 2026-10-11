@@ -167,8 +167,12 @@ def selftest() -> dict:
     if client is None:
         return {"status": "error", "detail": "mem0 client failed to initialize"}
     probe_user = "sim:__memcheck__"
+    # infer=False stores the probe VERBATIM — a healthcheck must exercise the
+    # embed+store+search plumbing deterministically, not the fact-extraction LLM's
+    # judgment (with infer=True it may decide the probe isn't worth remembering,
+    # so add "succeeds" having stored nothing and recall comes back empty).
     client.add(messages=[{"role": "user", "content": "memcheck probe: the sky is teal"}],
-               user_id=probe_user)
+               user_id=probe_user, infer=False)
     res = client.search(query="what color is the sky", filters={"user_id": probe_user}, top_k=1)
     items = res.get("results", res) if isinstance(res, dict) else res
     if not items:
