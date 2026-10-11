@@ -26,6 +26,7 @@ deliberately loud so the canary can gate on it.
 from __future__ import annotations
 
 from typing import List, Optional
+from urllib.parse import quote
 
 import store
 from config import settings
@@ -40,6 +41,26 @@ def _collection_for(namespace: str) -> str:
     return base if namespace == "real" else f"{base}_sim"
 
 
+def _pg_connection_string() -> str:
+    """libpq URI for the pgvector store.
+
+    mem0's pgvector provider only knows how to build `…@{host}:{port}/…`, which
+    CANNOT express a Cloud SQL unix socket: the socket dir (/cloudsql/<conn>) has
+    slashes+colons, so `@/cloudsql/…` parses as an EMPTY host and libpq silently
+    falls back to its compiled-in default socket (/var/run/postgresql) → connect
+    fails. So we hand mem0 a ready-made `connection_string` (it overrides the
+    individual params) with the socket dir in the `host=` query param — exactly
+    how migrations/env.py connects. The password is percent-encoded so a special
+    char in it can't corrupt the URI.
+    """
+    user = quote(settings.PG_USER, safe="")
+    pw = quote(settings.PG_PASSWORD, safe="")
+    if settings.PG_HOST.startswith("/"):  # unix socket (Cloud Run)
+        return (f"postgresql://{user}:{pw}@/{settings.PG_DB}"
+                f"?host={settings.PG_HOST}")
+    return f"postgresql://{user}:{pw}@{settings.PG_HOST}:5432/{settings.PG_DB}"
+
+
 def _mem0_config(collection: str) -> dict:
     """Build the self-hosted mem0 config for one collection."""
     return {
@@ -47,10 +68,7 @@ def _mem0_config(collection: str) -> dict:
             "provider": "pgvector",
             "config": {
                 "dbname": settings.PG_DB,
-                "user": settings.PG_USER,
-                "password": settings.PG_PASSWORD,
-                "host": settings.PG_HOST,  # /cloudsql/<conn> socket dir on Cloud Run
-                "port": 5432,
+                "connection_string": _pg_connection_string(),
                 "collection_name": collection,
                 "embedding_model_dims": settings.EMBED_DIM,
             },

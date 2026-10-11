@@ -59,6 +59,31 @@ def test_sim_and_real_are_isolated(monkeypatch):
     assert "sim-only" not in memory.recall("sim:probe", "secret")
 
 
+def test_pg_connection_string_uses_socket_host_param(monkeypatch):
+    """Cloud Run reaches Cloud SQL over a unix socket. The socket dir MUST ride in
+    the `host=` query param, never the URI authority — else libpq sees an empty
+    host and falls back to /var/run/postgresql (the prod memcheck outage)."""
+    monkeypatch.setattr(settings, "PG_HOST", "/cloudsql/proj:us-central1:jenny-pg")
+    monkeypatch.setattr(settings, "PG_USER", "postgres")
+    monkeypatch.setattr(settings, "PG_PASSWORD", "p@ss/w:rd")  # special chars → must be encoded
+    monkeypatch.setattr(settings, "PG_DB", "jenny")
+    cs = memory._pg_connection_string()
+    assert cs == "postgresql://postgres:p%40ss%2Fw%3Ard@/jenny?host=/cloudsql/proj:us-central1:jenny-pg"
+    # the raw socket dir must not appear in the authority (between @ and the path)
+    assert "@/cloudsql" not in cs
+    # and mem0 receives it as connection_string (overrides host/port it can't build)
+    assert memory._mem0_config("fan_memories")["vector_store"]["config"]["connection_string"] == cs
+
+
+def test_pg_connection_string_tcp_host(monkeypatch):
+    """TCP host (local Cloud SQL Auth Proxy) keeps the host:port authority form."""
+    monkeypatch.setattr(settings, "PG_HOST", "127.0.0.1")
+    monkeypatch.setattr(settings, "PG_USER", "postgres")
+    monkeypatch.setattr(settings, "PG_PASSWORD", "secret")
+    monkeypatch.setattr(settings, "PG_DB", "jenny")
+    assert memory._pg_connection_string() == "postgresql://postgres:secret@127.0.0.1:5432/jenny"
+
+
 def test_selftest_ok_and_disabled(monkeypatch):
     # disabled → reports disabled, doesn't touch any client
     monkeypatch.setattr(settings, "MEMORY_ENABLED", False)
