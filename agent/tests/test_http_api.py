@@ -3,6 +3,7 @@ the router/graph unit tests don't exercise. Uses TestClient; all handlers mocked
 below the HTTP boundary so nothing hits the network."""
 import hashlib
 import hmac
+import time
 
 from fastapi.testclient import TestClient
 
@@ -19,10 +20,33 @@ def test_health_ok():
     assert r.status_code == 200 and r.json()["ok"] is True
 
 
+def _fanvue_sig(secret: bytes, body: bytes, ts: str, extra_macs=()) -> str:
+    """Build an X-Fanvue-Signature header: t=<ts>,v0=<hmac of "ts.body">."""
+    mac = hmac.new(secret, f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
+    macs = ",".join(f"v0={m}" for m in (mac, *extra_macs))
+    return f"t={ts},{macs}"
+
+
 def test_webhook_rejects_bad_signature(monkeypatch):
     monkeypatch.setattr(settings, "FANVUE_WEBHOOK_SECRET", "shh")
+    # plain hex with no t=/v0= structure (the OLD, wrong scheme) must be rejected
     r = client.post("/webhook/fanvue", json={"type": "x"},
-                    headers={"webhook-signature": "deadbeef"})
+                    headers={"x-fanvue-signature": "deadbeef"})
+    assert r.status_code == 401
+    # right structure, wrong key → rejected
+    body = b'{"type":"ping"}'
+    bad = _fanvue_sig(b"wrong-key", body, str(int(time.time())))
+    r = client.post("/webhook/fanvue", content=body,
+                    headers={"x-fanvue-signature": bad, "content-type": "application/json"})
+    assert r.status_code == 401
+
+
+def test_webhook_rejects_stale_timestamp(monkeypatch):
+    monkeypatch.setattr(settings, "FANVUE_WEBHOOK_SECRET", "shh")
+    body = b'{"type":"ping"}'
+    stale = _fanvue_sig(b"shh", body, str(int(time.time()) - 3600))  # 1h old → replay
+    r = client.post("/webhook/fanvue", content=body,
+                    headers={"x-fanvue-signature": stale, "content-type": "application/json"})
     assert r.status_code == 401
 
 
@@ -32,11 +56,13 @@ def test_webhook_accepts_valid_signature(monkeypatch):
     monkeypatch.setattr(router, "handle_event",
                         lambda ev, dry_run=False: seen.update(ev) or {"status": "ok"})
     body = b'{"type":"ping","id":"e1"}'
-    sig = hmac.new(b"shh", body, hashlib.sha256).hexdigest()
+    ts = str(int(time.time()))
+    # include a second (bogus) v0 to exercise rotation: accept if ANY matches
+    sig = _fanvue_sig(b"shh", body, ts, extra_macs=("00deadbeef",))
     r = client.post("/webhook/fanvue", content=body,
-                    headers={"webhook-signature": sig, "content-type": "application/json"})
+                    headers={"x-fanvue-signature": sig, "content-type": "application/json"})
     assert r.status_code == 200
-    assert seen["type"] == "ping"  # body reached the router
+    assert seen["type"] == "ping"  # raw body reached the router
 
 
 def test_webhook_open_when_no_secret_configured(monkeypatch):
@@ -70,7 +96,10 @@ def test_simulate_runs_and_forces_sim_prefix(monkeypatch):
 
 def test_admin_reconcile_auth_guard(monkeypatch):
     monkeypatch.setattr(settings, "SIM_SECRET", "topsecret")
+    # isolate from ambient Fanvue state (a local token file would make the real
+    # reconcile hit the network) — we only assert the auth guard here.
+    import reconcile
+    monkeypatch.setattr(reconcile, "run", lambda *a, **k: {"status": "ok"})
     assert client.post("/admin/reconcile").status_code == 401
-    # correct secret → authorized (body shape varies by branch; only assert auth)
     assert client.post("/admin/reconcile",
                        headers={"x-sim-secret": "topsecret"}).status_code == 200
