@@ -15,8 +15,12 @@ class FakeMem0:
     def __init__(self, collection):
         self.collection = collection
         self.data: dict[str, list[str]] = {}
+        self.last_infer = None
 
-    def add(self, messages, user_id):
+    def add(self, messages, user_id, infer=True):
+        # real mem0 with infer=True may extract nothing; the fake stores verbatim
+        # regardless. selftest() passes infer=False for a deterministic roundtrip.
+        self.last_infer = infer
         self.data.setdefault(user_id, []).extend(m["content"] for m in messages)
 
     def search(self, query, *, filters, top_k=6, **kwargs):
@@ -92,8 +96,11 @@ def test_selftest_ok_and_disabled(monkeypatch):
     assert memory.selftest()["status"] == "disabled"
 
     # enabled + working client → ok
-    _enable_fake(monkeypatch)
+    fakes = _enable_fake(monkeypatch)
     store.use_namespace_for("sim:__memcheck__")
     res = memory.selftest()
     assert res["status"] == "ok"
     assert res["collection"] == "fan_memories_sim"
+    # the probe must be stored VERBATIM (infer=False), not left to mem0's
+    # fact-extraction LLM — else a healthy DB can still "recall nothing".
+    assert fakes["sim"].last_infer is False
