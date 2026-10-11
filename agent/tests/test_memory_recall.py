@@ -19,8 +19,10 @@ class FakeMem0:
     def add(self, messages, user_id):
         self.data.setdefault(user_id, []).extend(m["content"] for m in messages)
 
-    def search(self, query, user_id, limit=6):
-        return {"results": [{"memory": c} for c in self.data.get(user_id, [])[-limit:]]}
+    def search(self, query, *, filters, top_k=6, **kwargs):
+        # mem0 2.x scopes by filters={"user_id": ...}, caps by top_k (not user_id/limit)
+        user_id = filters["user_id"]
+        return {"results": [{"memory": c} for c in self.data.get(user_id, [])[-top_k:]]}
 
 
 def _enable_fake(monkeypatch):
