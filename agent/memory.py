@@ -112,7 +112,7 @@ def recall(fan_id: str, query: str, limit: int = 6) -> str:
     client = _client_for(store.current_namespace())
     if client is not None:
         try:
-            res = client.search(query=query, user_id=fan_id, limit=limit)
+            res = client.search(query=query, filters={"user_id": fan_id}, top_k=limit)
             items = res.get("results", res) if isinstance(res, dict) else res
             facts = [i.get("memory") or i.get("text", "") for i in items]
         except Exception as e:
@@ -169,7 +169,7 @@ def selftest() -> dict:
     probe_user = "sim:__memcheck__"
     client.add(messages=[{"role": "user", "content": "memcheck probe: the sky is teal"}],
                user_id=probe_user)
-    res = client.search(query="what color is the sky", user_id=probe_user, limit=1)
+    res = client.search(query="what color is the sky", filters={"user_id": probe_user}, top_k=1)
     items = res.get("results", res) if isinstance(res, dict) else res
     if not items:
         return {"status": "error", "detail": "probe write succeeded but recall returned nothing"}
