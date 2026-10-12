@@ -12,6 +12,18 @@ def test_message_event_runs_agent(monkeypatch):
     assert out["status"] == "replied" and out["reply"] == "hey!"
 
 
+def test_legacy_flat_message_runs_agent(monkeypatch):
+    """Real Fanvue legacy webhook: FLAT payload, NO `type` field — detect by shape
+    (has message + sender/messageUuid). This is the actual live production shape."""
+    monkeypatch.setattr(graph, "handle_message",
+                        lambda **k: {"reply": "heyy 🙈", "mode": "WARM", "actions": []})
+    ev = {"messageUuid": "m-1", "recipientUuid": "jenny", "eventId": "evt-1",
+          "sender": {"uuid": "fan-77"}, "message": {"text": "hi jenny"},
+          "unreadMessagesCount": 1, "isMuted": False}
+    out = router.handle_event(ev, dry_run=True)
+    assert out["status"] == "replied" and out["reply"] == "heyy 🙈"
+
+
 def test_payment_records_and_reacts(monkeypatch):
     calls = {}
 

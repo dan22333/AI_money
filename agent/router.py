@@ -33,14 +33,26 @@ def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: b
     if already_processed(event.get("id") or event.get("eventId")):
         return {"status": "duplicate", "type": etype}
 
-    if etype in ("creator.message.received", "message.received"):
-        sender = data.get("sender", {})
-        message = data.get("message", data)
-        fan = sender.get("uuid") or data.get("senderUuid") or data.get("recipientUuid")
-        text = message.get("text", "")
+    # Legacy Fanvue message webhooks are FLAT and carry NO `type` field — the
+    # kind is implied by the payload shape (has `message` + `sender`/`messageUuid`).
+    # Modern creator.* events use a type + data envelope. Detect either way.
+    is_message = etype in ("creator.message.received", "message.received") or (
+        isinstance(data, dict) and "message" in data
+        and ("sender" in data or "messageUuid" in data)
+    )
+    if is_message:
+        sender = data.get("sender") or {}
+        if not isinstance(sender, dict):
+            sender = {}
+        message = data.get("message") or {}
+        if not isinstance(message, dict):
+            message = {"text": message}
+        # the fan is the SENDER (never recipientUuid — that's Jenny herself)
+        fan = (sender.get("uuid") or sender.get("userUuid") or sender.get("id")
+               or data.get("senderUuid"))
+        text = message.get("text") or message.get("content") or message.get("body") or ""
         print(f"[webhook] message parsed fan={fan!r} text_len={len(text) if text else 0} "
-              f"sender_keys={list(sender.keys()) if isinstance(sender, dict) else '-'} "
-              f"message_keys={list(message.keys()) if isinstance(message, dict) else '-'}")
+              f"sender_keys={list(sender.keys())} message_keys={list(message.keys())}")
         if not fan or not text:
             print("[webhook] IGNORED message: could not find sender uuid and/or text "
                   "— real payload shape differs from the parse above")
