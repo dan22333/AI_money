@@ -139,6 +139,16 @@ class FanvueClient:
         except Exception:
             return r.status_code, {"_text": r.text[:500]}
 
+    def raw_post(self, path: str, json_body: Optional[dict] = None) -> tuple[int, object]:
+        """Authenticated POST that does NOT raise — returns (status_code, body).
+        Used by the admin probe to discover the real send-message endpoint."""
+        r = httpx.post(f"{settings.FANVUE_API_BASE}{path}", headers=self._headers(),
+                       json=json_body or {}, timeout=30)
+        try:
+            return r.status_code, r.json()
+        except Exception:
+            return r.status_code, {"_text": r.text[:500]}
+
     def send_message(self, user_uuid: str, text: str,
                      media_uuids: Optional[List[str]] = None,
                      price_cents: Optional[int] = None) -> dict:
