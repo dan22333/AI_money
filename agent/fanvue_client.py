@@ -129,6 +129,16 @@ class FanvueClient:
         r.raise_for_status()
         return r.json().get("data", [])
 
+    def raw_get(self, path: str, params: Optional[dict] = None) -> tuple[int, object]:
+        """Authenticated GET that does NOT raise — returns (status_code, parsed_body).
+        Used by the admin probe to discover real API shapes without a 500."""
+        r = httpx.get(f"{settings.FANVUE_API_BASE}{path}", headers=self._headers(),
+                      params=params or {}, timeout=30)
+        try:
+            return r.status_code, r.json()
+        except Exception:
+            return r.status_code, {"_text": r.text[:500]}
+
     def send_message(self, user_uuid: str, text: str,
                      media_uuids: Optional[List[str]] = None,
                      price_cents: Optional[int] = None) -> dict:
