@@ -24,6 +24,11 @@ def already_processed(event_id: Optional[str]) -> bool:
 def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: bool = True) -> dict:
     etype = event.get("type", "")
     data = event.get("data", event)
+    # Activation observability: real Fanvue payload shapes were never verified
+    # against the live API, so log the envelope + (for messages) the parsed
+    # fields so a silent no-reply is instantly diagnosable. Trim later.
+    print(f"[webhook] type={etype!r} top_keys={list(event.keys())} "
+          f"data_keys={list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
 
     if already_processed(event.get("id") or event.get("eventId")):
         return {"status": "duplicate", "type": etype}
@@ -33,9 +38,16 @@ def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: b
         message = data.get("message", data)
         fan = sender.get("uuid") or data.get("senderUuid") or data.get("recipientUuid")
         text = message.get("text", "")
+        print(f"[webhook] message parsed fan={fan!r} text_len={len(text) if text else 0} "
+              f"sender_keys={list(sender.keys()) if isinstance(sender, dict) else '-'} "
+              f"message_keys={list(message.keys()) if isinstance(message, dict) else '-'}")
         if not fan or not text:
+            print("[webhook] IGNORED message: could not find sender uuid and/or text "
+                  "— real payload shape differs from the parse above")
             return {"status": "ignored", "reason": "missing sender/text"}
         out = graph.handle_message(fan_id=fan, user_uuid=fan, text=text, dry_run=dry_run)
+        print(f"[webhook] replied mode={out.get('mode')} reply_len={len(out.get('reply') or '')} "
+              f"actions={len(out.get('actions') or [])}")
         return {"status": "replied", **out}
 
     if etype in ("creator.payment.succeeded", "payment.succeeded"):
