@@ -27,11 +27,34 @@ def health():
     return {"ok": True, "voice": settings.MODEL, "mode_model": settings.MODE_MODEL}
 
 
+def _signing_keys() -> list[bytes]:
+    """Plausible HMAC key encodings for the configured signing secret.
+
+    Fanvue's secret is `whsec_` + 64 hex chars (the user may store it with or
+    without the prefix). Webhook implementations disagree on what bytes to key
+    the HMAC with — the raw string, the hex-decoded 32 bytes, or the prefixed
+    string — so we try each and accept if any produces a matching MAC. Avoids a
+    guess-and-redeploy loop on the exact convention.
+    """
+    secret = settings.FANVUE_WEBHOOK_SECRET
+    hexpart = secret[len("whsec_"):] if secret.startswith("whsec_") else secret
+    candidates = [secret.encode(), hexpart.encode(), f"whsec_{hexpart}".encode()]
+    try:
+        candidates.append(bytes.fromhex(hexpart))  # 64 hex → 32 raw key bytes
+    except ValueError:
+        pass
+    out: list[bytes] = []
+    for k in candidates:
+        if k not in out:
+            out.append(k)
+    return out
+
+
 def _verify(body: bytes, sig_header: str | None) -> bool:
     """Verify a Fanvue webhook signature.
 
     Fanvue sends `X-Fanvue-Signature: t=<unix_ts>,v0=<hex>[,v0=<hex>...]`, where
-    each MAC is HMAC-SHA256(secret, f"{t}.{raw_body}"). Several v0 values can be
+    each MAC is HMAC-SHA256(key, f"{t}.{raw_body}"). Several v0 values can be
     present during signing-secret rotation — accept if ANY matches. The RAW body
     bytes must be used exactly as received (re-serialized JSON would fail). Reject
     if the timestamp skews more than 300s (replay protection).
@@ -55,9 +78,12 @@ def _verify(body: bytes, sig_header: str | None) -> bool:
             return False
     except ValueError:
         return False
-    expected = hmac.new(settings.FANVUE_WEBHOOK_SECRET.encode(),
-                        f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
-    return any(hmac.compare_digest(expected, m) for m in macs)
+    signed = f"{ts}.".encode() + body
+    for key in _signing_keys():
+        expected = hmac.new(key, signed, hashlib.sha256).hexdigest()
+        if any(hmac.compare_digest(expected, m) for m in macs):
+            return True
+    return False
 
 
 @app.post("/webhook/fanvue")
