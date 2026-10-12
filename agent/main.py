@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import time
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
@@ -26,19 +27,43 @@ def health():
     return {"ok": True, "voice": settings.MODEL, "mode_model": settings.MODE_MODEL}
 
 
-def _verify(body: bytes, signature: str | None) -> bool:
+def _verify(body: bytes, sig_header: str | None) -> bool:
+    """Verify a Fanvue webhook signature.
+
+    Fanvue sends `X-Fanvue-Signature: t=<unix_ts>,v0=<hex>[,v0=<hex>...]`, where
+    each MAC is HMAC-SHA256(secret, f"{t}.{raw_body}"). Several v0 values can be
+    present during signing-secret rotation — accept if ANY matches. The RAW body
+    bytes must be used exactly as received (re-serialized JSON would fail). Reject
+    if the timestamp skews more than 300s (replay protection).
+    """
     if not settings.FANVUE_WEBHOOK_SECRET:
         return True  # not enforced in dev
-    if not signature:
+    if not sig_header:
         return False
-    expected = hmac.new(settings.FANVUE_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    ts: str | None = None
+    macs: list[str] = []
+    for part in sig_header.split(","):
+        key, _, val = part.strip().partition("=")
+        if key == "t":
+            ts = val
+        elif key == "v0":
+            macs.append(val)
+    if not ts or not macs:
+        return False
+    try:
+        if abs(time.time() - int(ts)) > 300:
+            return False
+    except ValueError:
+        return False
+    expected = hmac.new(settings.FANVUE_WEBHOOK_SECRET.encode(),
+                        f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
+    return any(hmac.compare_digest(expected, m) for m in macs)
 
 
 @app.post("/webhook/fanvue")
 async def fanvue_webhook(request: Request):
     body = await request.body()
-    sig = request.headers.get("webhook-signature") or request.headers.get("x-fanvue-signature")
+    sig = request.headers.get("x-fanvue-signature") or request.headers.get("webhook-signature")
     if not _verify(body, sig):
         raise HTTPException(status_code=401, detail="bad signature")
     event = await request.json()
