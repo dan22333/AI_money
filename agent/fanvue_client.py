@@ -154,10 +154,12 @@ class FanvueClient:
                      price_cents: Optional[int] = None) -> dict:
         body: dict = {"text": text}
         if media_uuids:
-            body["mediaUuids"] = media_uuids
+            body["media"] = media_uuids  # Fanvue field is `media` (uuid list)
         if price_cents:
             body["price"] = price_cents  # cents; makes it pay-to-view
-        r = httpx.post(f"{settings.FANVUE_API_BASE}/v1/chats/{user_uuid}/messages",
+        # Send endpoint is SINGULAR /message (verified live: 201). The plural
+        # /messages path is read-only (GET) and 404s on POST.
+        r = httpx.post(f"{settings.FANVUE_API_BASE}/v1/chats/{user_uuid}/message",
                        headers=self._headers(), json=body, timeout=30)
         r.raise_for_status()
         return r.json()
