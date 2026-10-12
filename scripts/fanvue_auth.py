@@ -22,7 +22,14 @@ AUTH_URL  = "https://auth.fanvue.com/oauth2/auth"
 TOKEN_URL = "https://auth.fanvue.com/oauth2/token"
 PORT      = int(os.environ.get("OAUTH_CALLBACK_PORT", "8080"))
 REDIRECT  = os.environ.get("OAUTH_REDIRECT_URI", f"http://localhost:{PORT}/callback")
-SCOPES    = os.environ.get("OAUTH_SCOPES", "openid offline_access read:self read:chat write:chat")
+# Full set Jenny needs: chat (reply+send), fan/insights (reconcile backfill),
+# creator (payment/subscription/follow webhook events), media (future catalog),
+# offline_access (refresh token). Override with the OAUTH_SCOPES env var.
+SCOPES    = os.environ.get(
+    "OAUTH_SCOPES",
+    "openid offline_access read:self read:chat write:chat "
+    "read:fan read:insights read:creator read:media",
+)
 TOKENS_FILE = "secrets/.fanvue_tokens.json"
 
 

@@ -121,9 +121,10 @@ class FanvueClient:
         return r.json().get("data", [])
 
     def list_earnings(self, since: str | None = None) -> list:
-        """Recent earnings/purchases. Used by reconcile to repair missed webhooks."""
-        params = {"since": since} if since else {}
-        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/earnings", headers=self._headers(),
+        """Recent earnings/invoices. Used by reconcile to repair missed webhooks.
+        Lives under /v1/insights/earnings (NOT /v1/earnings, which 404s)."""
+        params = {"startDate": since} if since else {}
+        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/insights/earnings", headers=self._headers(),
                       params=params, timeout=30)
         r.raise_for_status()
         return r.json().get("data", [])
@@ -136,7 +137,7 @@ class FanvueClient:
             body["mediaUuids"] = media_uuids
         if price_cents:
             body["price"] = price_cents  # cents; makes it pay-to-view
-        r = httpx.post(f"{settings.FANVUE_API_BASE}/v1/chats/{user_uuid}/message",
+        r = httpx.post(f"{settings.FANVUE_API_BASE}/v1/chats/{user_uuid}/messages",
                        headers=self._headers(), json=body, timeout=30)
         r.raise_for_status()
         return r.json()

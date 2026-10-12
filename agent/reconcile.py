@@ -44,7 +44,7 @@ def _sync_earnings(since: str | None) -> int:
         store.use_namespace_for(fan_id)
         store.add_purchase(
             fan_id, invoice,
-            gross_cents=int(e.get("grossCents", e.get("amount", 0))),
+            gross_cents=int(e.get("grossCents") or e.get("gross") or e.get("amount") or 0),
             source=e.get("source", "reconcile"),
             media_uuids=e.get("mediaUuids", []),
             message_uuid=e.get("messageUuid", ""),
@@ -54,9 +54,25 @@ def _sync_earnings(since: str | None) -> int:
 
 
 def run(since: str | None = None) -> dict:
-    """Run the reconcile. Returns a summary dict (also the HTTP response body)."""
+    """Run the reconcile. Returns a summary dict (also the HTTP response body).
+
+    Each sync is isolated: one endpoint failing (e.g. a 404/scope error on
+    earnings) must NOT discard a subscriber backfill that already succeeded. A
+    partial run reports status="partial" with the per-sync errors, still HTTP 200
+    so the scheduler/caller sees the detail instead of an opaque 500."""
     if not fanvue.ready:
         return {"status": "skipped", "reason": "fanvue not connected"}
-    subs = _sync_subscribers()
-    earns = _sync_earnings(since)
-    return {"status": "ok", "subscribersSynced": subs, "purchasesSynced": earns}
+    result: dict = {"status": "ok"}
+    errors: dict = {}
+    try:
+        result["subscribersSynced"] = _sync_subscribers()
+    except Exception as e:
+        errors["subscribers"] = f"{type(e).__name__}: {e}"
+    try:
+        result["purchasesSynced"] = _sync_earnings(since)
+    except Exception as e:
+        errors["earnings"] = f"{type(e).__name__}: {e}"
+    if errors:
+        result["status"] = "partial"
+        result["errors"] = errors
+    return result
