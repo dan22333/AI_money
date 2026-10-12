@@ -141,6 +141,8 @@ def memcheck(x_sim_secret: str | None = Header(default=None)):
 
 class ProbeIn(BaseModel):
     paths: list[str] = []
+    post_path: str = ""      # if set, do a POST to discover the send endpoint
+    post_body: dict = {}
 
 
 @app.post("/admin/fanvue_probe")
@@ -181,4 +183,10 @@ def fanvue_probe(inp: ProbeIn | None = None, x_sim_secret: str | None = Header(d
             report[p] = entry
         except Exception as e:
             report[p] = {"error": f"{type(e).__name__}: {e}"}
+    if inp and inp.post_path and inp.post_path.startswith("/v"):
+        try:
+            status, body = fanvue.raw_post(inp.post_path, inp.post_body)
+            report[f"POST {inp.post_path}"] = {"status": status, "body": str(body)[:300]}
+        except Exception as e:
+            report[f"POST {inp.post_path}"] = {"error": f"{type(e).__name__}: {e}"}
     return report
