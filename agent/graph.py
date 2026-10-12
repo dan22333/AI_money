@@ -175,4 +175,20 @@ def handle_message(fan_id: str, user_uuid: str, text: str, dry_run: bool = False
         if isinstance(m, AIMessage) and m.content:
             final = m.content
             break
-    return {"reply": final, "mode": result.get("mode"), "actions": tools.get_outbox()}
+    actions = tools.get_outbox()
+    # Deliver the reply. The media/selling tools (send_teaser/offer_*) already
+    # POST their own messages via tools._send; a plain conversational reply is
+    # just AIMessage text and nothing sent it, so the harness delivers it here.
+    # Gated by dry_run (so /simulate + the canary never message a real fan) and
+    # deduped against a message a tool already sent with the same text.
+    if isinstance(final, str) and final.strip() and not dry_run:
+        from fanvue_client import fanvue
+        already_sent = any(a.get("type") == "message" and a.get("text") == final
+                           for a in actions)
+        if fanvue.ready and not already_sent:
+            try:
+                fanvue.send_message(user_uuid, final)
+                actions.append({"type": "message", "text": final, "auto": True})
+            except Exception as e:  # never let a delivery error crash the handler
+                print(f"[send] delivery to Fanvue failed: {type(e).__name__}: {e}")
+    return {"reply": final, "mode": result.get("mode"), "actions": actions}
