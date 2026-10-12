@@ -137,3 +137,48 @@ def memcheck(x_sim_secret: str | None = Header(default=None)):
     if result.get("status") == "error":
         raise HTTPException(status_code=503, detail=result.get("detail", "memory selftest failed"))
     return result
+
+
+class ProbeIn(BaseModel):
+    paths: list[str] = []
+
+
+@app.post("/admin/fanvue_probe")
+def fanvue_probe(inp: ProbeIn | None = None, x_sim_secret: str | None = Header(default=None)):
+    """Diagnostic: GET curated (or supplied) Fanvue endpoints with the server's
+    own token and report status + top-level keys + a sample item, so we can
+    discover real list/chat shapes (send path, followers, earnings) without
+    desyncing the rotating refresh token by probing from a laptop. sim-secret
+    protected. Temporary — remove once the shapes are pinned."""
+    if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    from fanvue_client import fanvue
+    if not fanvue.ready:
+        return {"ready": False}
+    default_paths = ["/v1/users/me", "/v1/chats", "/v1/followers", "/v1/subscribers",
+                     "/v1/insights/subscribers", "/v1/insights/earnings"]
+    paths = inp.paths if (inp and inp.paths) else default_paths
+    report: dict = {}
+    for p in paths:
+        if not p.startswith("/v"):
+            report[p] = {"error": "path must start with /v"}
+            continue
+        try:
+            status, body = fanvue.raw_get(p)
+            entry: dict = {"status": status}
+            if isinstance(body, dict):
+                entry["keys"] = list(body.keys())[:20]
+                data = body.get("data")
+                if isinstance(data, list):
+                    entry["count"] = len(data)
+                    if data and isinstance(data[0], dict):
+                        entry["item_keys"] = list(data[0].keys())[:30]
+                        entry["item_sample"] = {k: str(v)[:80] for k, v in list(data[0].items())[:30]}
+                else:
+                    entry["sample"] = {k: str(v)[:80] for k, v in list(body.items())[:20]}
+            else:
+                entry["body"] = str(body)[:300]
+            report[p] = entry
+        except Exception as e:
+            report[p] = {"error": f"{type(e).__name__}: {e}"}
+    return report
