@@ -73,5 +73,5 @@ def test_send_message_body_contract(monkeypatch):
 
     fanvue_client.fanvue.send_message("user-9", "come see 😏", media_uuids=["m1"], price_cents=1500)
     assert captured["json"] == {"text": "come see 😏", "mediaUuids": ["m1"], "price": 1500}
-    assert captured["url"].endswith("/v1/chats/user-9/message")
+    assert captured["url"].endswith("/v1/chats/user-9/messages")
     assert captured["headers"]["Authorization"] == "Bearer tok-123"
