@@ -41,18 +41,19 @@ def _upsert_fan(uuid: str, *, is_follower: bool | None = None, is_subscriber: bo
     SAME row, so someone who is both is one record with both set."""
     store.use_namespace_for(uuid)  # real fans → prod DB
     fan = store.get_fan(uuid)
+    at = registered_at or store._now().isoformat()
     if handle:
         fan["handle"] = handle
     if display_name:
         fan["displayName"] = display_name
     if registered_at:
         fan.setdefault("registeredAt", registered_at)
+    # mark_* record a lifecycle event only on an actual transition, so re-running
+    # reconcile on an already-active fan doesn't spam the trace.
     if is_follower:
-        fan["isFollower"] = True
-        fan.setdefault("followedAt", registered_at or store._now().isoformat())
+        store.mark_followed(fan, at=at, source="reconcile")
     if is_subscriber:
-        fan["subscriptionStatus"] = "active"
-        fan.setdefault("subscribedAt", registered_at or store._now().isoformat())
+        store.mark_subscribed(fan, at=at, source="reconcile")
     store.save_fan(fan)
 
 
@@ -71,16 +72,9 @@ def _downgrade_dropped_fans(follower_ids: set, subscriber_ids: set) -> int:
         uuid = fan.get("fanUuid")
         if not uuid or str(uuid).startswith("sim:"):
             continue
-        changed = False
-        if fan.get("isFollower") and uuid not in follower_ids:
-            fan["isFollower"] = False
-            fan["unfollowedAt"] = store._now().isoformat()
-            changed = True
-        if fan.get("subscriptionStatus") == "active" and uuid not in subscriber_ids:
-            fan["subscriptionStatus"] = "expired"
-            fan["unsubscribedAt"] = store._now().isoformat()
-            changed = True
-        if changed:
+        left_follow = uuid not in follower_ids and store.mark_unfollowed(fan, source="reconcile")
+        left_sub = uuid not in subscriber_ids and store.mark_unsubscribed(fan, source="reconcile")
+        if left_follow or left_sub:
             store.save_fan(fan)
             downgraded += 1
     return downgraded

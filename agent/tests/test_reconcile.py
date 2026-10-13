@@ -103,6 +103,23 @@ def test_reconcile_downgrades_unfollow_and_unsubscribe(monkeypatch):
     assert "unfollowedAt" in f and "unsubscribedAt" in f
 
 
+def test_reconcile_records_full_lifecycle_trace(monkeypatch):
+    """active -> inactive -> active must be fully recoverable from statusEvents,
+    not flattened to the current flag; the stale unsubscribedAt clears on re-sub."""
+    _patch(monkeypatch, FakeFanvue(subs=[{"uuid": "fan-5"}]))
+    reconcile.run()                                   # subscribed
+    _patch(monkeypatch, FakeFanvue(subs=[]))
+    reconcile.run()                                   # unsubscribed
+    _patch(monkeypatch, FakeFanvue(subs=[{"uuid": "fan-5"}]))
+    reconcile.run()                                   # re-subscribed
+
+    f = store.get_fan("fan-5")
+    assert f["subscriptionStatus"] == "active"
+    assert "unsubscribedAt" not in f                  # cleared on re-sub
+    events = [e["event"] for e in f["statusEvents"]]
+    assert events == ["subscribed", "unsubscribed", "subscribed"]
+
+
 def test_reconcile_skips_zero_dollar_earnings(monkeypatch):
     """$0 rows (free follows / free subs) are not spend and must not tier a fan."""
     fake = FakeFanvue(
