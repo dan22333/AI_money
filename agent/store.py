@@ -48,6 +48,7 @@ BUNDLES = "bundles"
 MESSAGES = "messages"
 PURCHASES = "purchases"
 PROCESSED = "processed_events"  # webhook idempotency ledger
+SYNC_META = "sync_meta"         # per-source reconcile watermarks (delta sync)
 
 
 def _now() -> datetime:  # overridable in tests
@@ -281,6 +282,24 @@ def save_message(fan_id: str, role: str, text: str, *, media_uuids=None,
     _backend().sub_add(FANS, fan_id, MESSAGES, doc)
 
 
+def upsert_message(fan_id: str, msg_uuid: str, role: str, text: str, *,
+                   sent_at: str = "", media_uuids=None, price_cents: int = 0) -> bool:
+    """Idempotent message store keyed by Fanvue messageUuid — used by the backfill
+    so re-running reconcile never duplicates history. Returns True if newly written.
+    `ts` is set to the message's real sent time so it interleaves correctly with
+    live webhook messages in recent_messages()."""
+    if not msg_uuid:
+        return False
+    if _backend().sub_get(FANS, fan_id, MESSAGES, msg_uuid) is not None:
+        return False
+    _backend().sub_set(FANS, fan_id, MESSAGES, msg_uuid,
+                       {"fan_id": fan_id, "role": role, "text": text, "messageUuid": msg_uuid,
+                        "mediaUuids": media_uuids or [], "priceCents": price_cents,
+                        "mode": "", "sessionId": "", "ts": sent_at or _now().isoformat(),
+                        "source": "sim" if fan_id.startswith("sim:") else "fanvue"})
+    return True
+
+
 def recent_messages(fan_id: str, limit: int = 15) -> List[dict]:
     return _backend().sub_recent(FANS, fan_id, MESSAGES, "ts", limit)
 
@@ -322,6 +341,17 @@ def claim_event(event_id: str) -> bool:
     restarts and correct across concurrent Cloud Run instances — unlike the old
     in-process set which reset on every cold start and wasn't shared."""
     return _backend().create_if_absent(PROCESSED, event_id, {"ts": _now().isoformat()})
+
+
+# ---------------- reconcile watermarks (delta sync) ----------------
+def get_sync_meta(key: str) -> dict:
+    """Read a per-source sync watermark (e.g. last earnings date, per-chat last
+    message time). Namespaced like everything else, so sim/real stay separate."""
+    return _backend().get(SYNC_META, key) or {}
+
+
+def set_sync_meta(key: str, value: dict) -> None:
+    _backend().set(SYNC_META, key, value)
 
 
 # ---------------- catalog ----------------
