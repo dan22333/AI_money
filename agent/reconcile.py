@@ -56,13 +56,47 @@ def _upsert_fan(uuid: str, *, is_follower: bool | None = None, is_subscriber: bo
     store.save_fan(fan)
 
 
-def _sync_fans() -> int:
-    """Upsert followers + subscribers. Returns records processed."""
+def _downgrade_dropped_fans(follower_ids: set, subscriber_ids: set) -> int:
+    """Clear flags for fans who LEFT — present in our store but absent from the
+    live Fanvue list means they unfollowed / unsubscribed. Fanvue's list IS the
+    source of truth (someone who cancels just drops off `/v1/subscribers`), so a
+    full re-pull + diff is how we learn it; there's no reliable cancel webhook.
+
+    SAFETY: only correct because list_followers/list_subscribers are now fully
+    paginated (complete). A truncated list would wrongly downgrade everyone past
+    page 1 — so this must never run on a partial fetch."""
+    store.use_namespace_for("__reconcile__")  # select the prod namespace (non-sim)
+    downgraded = 0
+    for fan in store.list_fans():
+        uuid = fan.get("fanUuid")
+        if not uuid or str(uuid).startswith("sim:"):
+            continue
+        changed = False
+        if fan.get("isFollower") and uuid not in follower_ids:
+            fan["isFollower"] = False
+            fan["unfollowedAt"] = store._now().isoformat()
+            changed = True
+        if fan.get("subscriptionStatus") == "active" and uuid not in subscriber_ids:
+            fan["subscriptionStatus"] = "expired"
+            fan["unsubscribedAt"] = store._now().isoformat()
+            changed = True
+        if changed:
+            store.save_fan(fan)
+            downgraded += 1
+    return downgraded
+
+
+def _sync_fans() -> dict:
+    """Upsert followers + subscribers, then downgrade anyone who dropped off the
+    live lists (unfollow/unsubscribe). Returns processed + downgraded counts."""
+    follower_ids: set = set()
+    subscriber_ids: set = set()
     n = 0
     for f in fanvue.list_followers():
         uuid = f.get("uuid")
         if not uuid:
             continue
+        follower_ids.add(uuid)
         _upsert_fan(uuid, is_follower=True, handle=f.get("handle"),
                     display_name=f.get("displayName"), registered_at=f.get("registeredAt"))
         n += 1
@@ -70,10 +104,12 @@ def _sync_fans() -> int:
         uuid = s.get("uuid") or s.get("fanUuid")
         if not uuid:
             continue
+        subscriber_ids.add(uuid)
         _upsert_fan(uuid, is_subscriber=True, handle=s.get("handle"),
                     display_name=s.get("displayName"), registered_at=s.get("subscribedAt"))
         n += 1
-    return n
+    downgraded = _downgrade_dropped_fans(follower_ids, subscriber_ids)
+    return {"fansSynced": n, "fansDowngraded": downgraded}
 
 
 def _sync_earnings() -> int:
@@ -98,10 +134,10 @@ def _sync_earnings() -> int:
         n += 1
     if latest and latest != since:
         store.set_sync_meta("earnings", {"lastDate": latest})
-    return n
+    return {"purchasesSynced": n}
 
 
-def _sync_messages(creator_uuid: str) -> int:
+def _sync_messages(creator_uuid: str) -> dict:
     """Backfill full chat history (both directions), idempotent by messageUuid.
     Per-chat delta via the last sentAt watermark."""
     n = 0
@@ -127,10 +163,10 @@ def _sync_messages(creator_uuid: str) -> int:
                 latest = sent
         if latest and latest != since:
             store.set_sync_meta(f"chat:{uuid}", {"lastSentAt": latest})
-    return n
+    return {"messagesSynced": n}
 
 
-def _sync_media() -> int:
+def _sync_media() -> dict:
     """Backfill the creator's media library into the catalog (teasers/selling).
     NOTE: recommendedPrice unit is stored as-is pending confirmation."""
     store.use_namespace_for("catalog")  # catalog is global (real namespace)
@@ -146,7 +182,7 @@ def _sync_media() -> int:
                                status="ready" if m.get("status") in (None, "ready", "processed", "completed")
                                else str(m.get("status")))
         n += 1
-    return n
+    return {"mediaSynced": n}
 
 
 def run(since: str | None = None) -> dict:
@@ -162,7 +198,7 @@ def run(since: str | None = None) -> dict:
                      ("messages", lambda: _sync_messages(creator)),
                      ("media", _sync_media)):
         try:
-            result[f"{name}Synced"] = fn()
+            result.update(fn())  # each sync returns its own {xSynced: n, ...} counts
         except Exception as e:
             errors[name] = f"{type(e).__name__}: {e}"
     if errors:
