@@ -120,12 +120,38 @@ class FanvueClient:
         r.raise_for_status()
         return r.json().get("data", [])
 
+    def list_followers(self) -> list:
+        """Followers (free fans). Verified live: GET /v1/followers → {data:[{uuid,
+        handle, displayName, nickname, isTopSpender, registeredAt}], nextCursor}."""
+        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/followers", headers=self._headers(), timeout=30)
+        r.raise_for_status()
+        return r.json().get("data", [])
+
     def list_earnings(self, since: str | None = None) -> list:
-        """Recent earnings/invoices. Used by reconcile to repair missed webhooks.
-        Lives under /v1/insights/earnings (NOT /v1/earnings, which 404s)."""
+        """Earnings/invoices. Verified live: GET /v1/insights/earnings → {data:[{date,
+        gross, net, total, currency, source, transactionOrderId, transactionOrderStatus,
+        user:{uuid,handle}}], nextCursor}. `since` filters via startDate (delta sync)."""
         params = {"startDate": since} if since else {}
         r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/insights/earnings", headers=self._headers(),
                       params=params, timeout=30)
+        r.raise_for_status()
+        return r.json().get("data", [])
+
+    def list_media(self) -> list:
+        """Creator's own media library (catalog). Verified live: GET /v1/media →
+        {data:[{uuid, mediaType, recommendedPrice, caption, description, name, tags,
+        status, variants}]}. Needs read:media."""
+        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/media", headers=self._headers(), timeout=30)
+        r.raise_for_status()
+        return r.json().get("data", [])
+
+    def list_chat_messages(self, user_uuid: str, since: str | None = None) -> list:
+        """Full message history for one chat (both directions). Verified live:
+        GET /v1/chats/{userUuid}/messages → {data:[{uuid, text, sender, recipient,
+        sentAt, type, status, ...}], dateFilter}. `since` supports delta sync."""
+        params = {"startDate": since} if since else {}
+        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/chats/{user_uuid}/messages",
+                      headers=self._headers(), params=params, timeout=30)
         r.raise_for_status()
         return r.json().get("data", [])
 
