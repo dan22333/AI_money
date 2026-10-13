@@ -81,6 +81,28 @@ def test_reconcile_backfills_fans_and_purchases(monkeypatch):
     assert f2.get("subscriptionStatus") != "active"
 
 
+def test_reconcile_downgrades_unfollow_and_unsubscribe(monkeypatch):
+    """A fan present last run but ABSENT from the live list this run has
+    unfollowed / unsubscribed — flags must be cleared, not left stale."""
+    # run 1: fan-1 is both follower and subscriber
+    _patch(monkeypatch, FakeFanvue(
+        followers=[{"uuid": "fan-1"}],
+        subs=[{"uuid": "fan-1"}],
+    ))
+    reconcile.run()
+    f = store.get_fan("fan-1")
+    assert f["isFollower"] is True and f["subscriptionStatus"] == "active"
+
+    # run 2: fan-1 has dropped off BOTH lists → downgrade
+    _patch(monkeypatch, FakeFanvue(followers=[], subs=[]))
+    out = reconcile.run()
+    assert out["fansDowngraded"] == 1
+    f = store.get_fan("fan-1")
+    assert f["isFollower"] is False
+    assert f["subscriptionStatus"] == "expired"
+    assert "unfollowedAt" in f and "unsubscribedAt" in f
+
+
 def test_reconcile_skips_zero_dollar_earnings(monkeypatch):
     """$0 rows (free follows / free subs) are not spend and must not tier a fan."""
     fake = FakeFanvue(

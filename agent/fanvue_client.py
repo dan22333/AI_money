@@ -106,54 +106,66 @@ class FanvueClient:
         r.raise_for_status()
         return r.json()
 
+    def _paginate(self, path: str, params: Optional[dict] = None, *, max_pages: int = 500) -> list:
+        """Follow Fanvue cursor pagination to return the FULL list, not just page 1.
+
+        Fanvue's list contract (official docs): request params `cursor` (opaque,
+        from the previous response's `nextCursor`) + `size` (default 15, max 50);
+        response `{data, nextCursor, total}` with `nextCursor=null` at the end.
+        We request size=50 to minimise round-trips. Guards: stop on a falsy or
+        REPEATED cursor (so a server that ignores `cursor` can't loop forever) and
+        a hard page cap. Without this, every list method silently truncated at the
+        first 15 rows."""
+        params = dict(params or {})
+        params.setdefault("size", 50)
+        out: list = []
+        cursor: Optional[str] = None
+        seen: set = set()
+        for _ in range(max_pages):
+            q = dict(params)
+            if cursor:
+                q["cursor"] = cursor
+            r = httpx.get(f"{settings.FANVUE_API_BASE}{path}", headers=self._headers(),
+                          params=q, timeout=30)
+            r.raise_for_status()
+            body = r.json()
+            out.extend(body.get("data") or [])
+            cursor = body.get("nextCursor")
+            if not cursor or cursor in seen:
+                break
+            seen.add(cursor)
+        return out
+
     def list_chats(self, unread_only: bool = True) -> list:
-        params = {"filter": "unread"} if unread_only else {}
-        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/chats", headers=self._headers(),
-                      params=params, timeout=30)
-        r.raise_for_status()
-        return r.json().get("data", [])
+        return self._paginate("/v1/chats", {"filter": "unread"} if unread_only else {})
 
     def list_subscribers(self) -> list:
         """Active subscribers. Used by the nightly reconcile to backfill fans."""
-        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/subscribers", headers=self._headers(),
-                      params={"status": "active"}, timeout=30)
-        r.raise_for_status()
-        return r.json().get("data", [])
+        return self._paginate("/v1/subscribers", {"status": "active"})
 
     def list_followers(self) -> list:
         """Followers (free fans). Verified live: GET /v1/followers → {data:[{uuid,
         handle, displayName, nickname, isTopSpender, registeredAt}], nextCursor}."""
-        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/followers", headers=self._headers(), timeout=30)
-        r.raise_for_status()
-        return r.json().get("data", [])
+        return self._paginate("/v1/followers")
 
     def list_earnings(self, since: str | None = None) -> list:
         """Earnings/invoices. Verified live: GET /v1/insights/earnings → {data:[{date,
         gross, net, total, currency, source, transactionOrderId, transactionOrderStatus,
         user:{uuid,handle}}], nextCursor}. `since` filters via startDate (delta sync)."""
-        params = {"startDate": since} if since else {}
-        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/insights/earnings", headers=self._headers(),
-                      params=params, timeout=30)
-        r.raise_for_status()
-        return r.json().get("data", [])
+        return self._paginate("/v1/insights/earnings", {"startDate": since} if since else {})
 
     def list_media(self) -> list:
         """Creator's own media library (catalog). Verified live: GET /v1/media →
         {data:[{uuid, mediaType, recommendedPrice, caption, description, name, tags,
         status, variants}]}. Needs read:media."""
-        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/media", headers=self._headers(), timeout=30)
-        r.raise_for_status()
-        return r.json().get("data", [])
+        return self._paginate("/v1/media")
 
     def list_chat_messages(self, user_uuid: str, since: str | None = None) -> list:
         """Full message history for one chat (both directions). Verified live:
         GET /v1/chats/{userUuid}/messages → {data:[{uuid, text, sender, recipient,
         sentAt, type, status, ...}], dateFilter}. `since` supports delta sync."""
-        params = {"startDate": since} if since else {}
-        r = httpx.get(f"{settings.FANVUE_API_BASE}/v1/chats/{user_uuid}/messages",
-                      headers=self._headers(), params=params, timeout=30)
-        r.raise_for_status()
-        return r.json().get("data", [])
+        return self._paginate(f"/v1/chats/{user_uuid}/messages",
+                              {"startDate": since} if since else {})
 
     def raw_get(self, path: str, params: Optional[dict] = None) -> tuple[int, object]:
         """Authenticated GET that does NOT raise — returns (status_code, parsed_body).

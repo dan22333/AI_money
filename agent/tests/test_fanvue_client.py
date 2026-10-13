@@ -71,6 +71,53 @@ def test_ready_false_when_secret_empty_or_missing(monkeypatch):
     assert fanvue_client.FanvueClient().ready is False
 
 
+def _client_with_token(monkeypatch):
+    """A ready client whose _headers() won't trigger a network refresh."""
+    c = _fresh_client()
+    c._tokens = {"access_token": "a0"}
+    c._access_expiry = float("inf")
+    return c
+
+
+def test_paginate_follows_cursor_across_pages(monkeypatch):
+    """_paginate must return EVERY page, requesting size=50 and passing the
+    previous nextCursor as `cursor`, stopping when nextCursor is null."""
+    c = _client_with_token(monkeypatch)
+    pages = {
+        None: {"data": [{"uuid": "1"}, {"uuid": "2"}], "nextCursor": "c1"},
+        "c1": {"data": [{"uuid": "3"}], "nextCursor": None},
+    }
+    seen_params = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        seen_params.append(params)
+        body = pages[params.get("cursor")]
+        return types.SimpleNamespace(json=lambda: body, raise_for_status=lambda: None)
+
+    monkeypatch.setattr(fanvue_client.httpx, "get", fake_get)
+    out = c.list_followers()
+    assert [x["uuid"] for x in out] == ["1", "2", "3"]       # all pages concatenated
+    assert all(p.get("size") == 50 for p in seen_params)     # max page size requested
+    assert seen_params[1].get("cursor") == "c1"              # cursor threaded through
+
+
+def test_paginate_stops_on_repeated_cursor(monkeypatch):
+    """If the server ignores `cursor` and keeps returning the same nextCursor,
+    the seen-cursor guard must break instead of looping forever."""
+    c = _client_with_token(monkeypatch)
+    calls = {"n": 0}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["n"] += 1
+        body = {"data": [{"uuid": "x"}], "nextCursor": "STUCK"}  # never advances
+        return types.SimpleNamespace(json=lambda: body, raise_for_status=lambda: None)
+
+    monkeypatch.setattr(fanvue_client.httpx, "get", fake_get)
+    out = c.list_media()
+    assert calls["n"] == 2          # page 1, then page 2 returns the same cursor → stop
+    assert len(out) == 2            # no infinite loop
+
+
 def test_rotation_writes_new_secret_version(monkeypatch):
     monkeypatch.setattr(settings, "FANVUE_TOKENS_SOURCE", "secret")
     monkeypatch.setattr(settings, "GCP_PROJECT", "test-proj")

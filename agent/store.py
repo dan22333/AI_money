@@ -252,6 +252,13 @@ def save_fan(fan: dict) -> None:
     _backend().set(FANS, fan["fanUuid"], fan)
 
 
+def list_fans() -> List[dict]:
+    """All fan docs in the CURRENT namespace. Used by reconcile to downgrade
+    fans who unfollowed/unsubscribed (present in our store, absent from the live
+    Fanvue list). Set the namespace before calling."""
+    return _backend().list(FANS)
+
+
 def compute_session(fan_id: str) -> tuple[str, bool]:
     """Return (session_id, is_new). New session if gap since lastSeenAt exceeds threshold."""
     fan = get_fan(fan_id)
