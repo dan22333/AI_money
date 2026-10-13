@@ -259,6 +259,67 @@ def list_fans() -> List[dict]:
     return _backend().list(FANS)
 
 
+# ---------------- subscription / follow lifecycle ----------------
+# We keep the CURRENT flag (subscriptionStatus / isFollower) denormalised on the
+# fan for fast reads, AND an append-only `statusEvents` trace so a fan who goes
+# active -> inactive -> active again is fully recoverable, not flattened to a
+# single flag. Every transition is recorded exactly once (the mark_* helpers
+# are no-ops when already in the target state), so webhooks (real-time) and the
+# nightly reconcile diff can both call them without producing duplicates.
+def append_status_event(fan: dict, event: str, *, at: str | None = None,
+                        source: str = "reconcile") -> None:
+    """Append one lifecycle event to the fan's trace. Mutates `fan`; caller saves."""
+    fan.setdefault("statusEvents", []).append(
+        {"event": event, "at": at or _now().isoformat(), "source": source})
+
+
+def mark_subscribed(fan: dict, *, at: str | None = None, source: str = "reconcile") -> bool:
+    """not-active -> active. Records a `subscribed` event and clears any stale
+    unsubscribedAt. No-op (returns False) if already active."""
+    if fan.get("subscriptionStatus") == "active":
+        return False
+    at = at or _now().isoformat()
+    fan["subscriptionStatus"] = "active"
+    fan["subscribedAt"] = at           # current subscription start (updates on re-sub)
+    fan.pop("unsubscribedAt", None)
+    append_status_event(fan, "subscribed", at=at, source=source)
+    return True
+
+
+def mark_unsubscribed(fan: dict, *, at: str | None = None, source: str = "reconcile") -> bool:
+    """active -> expired. Records an `unsubscribed` event. No-op if not active."""
+    if fan.get("subscriptionStatus") != "active":
+        return False
+    at = at or _now().isoformat()
+    fan["subscriptionStatus"] = "expired"
+    fan["unsubscribedAt"] = at
+    append_status_event(fan, "unsubscribed", at=at, source=source)
+    return True
+
+
+def mark_followed(fan: dict, *, at: str | None = None, source: str = "reconcile") -> bool:
+    """not-follower -> follower. Records a `followed` event. No-op if already following."""
+    if fan.get("isFollower"):
+        return False
+    at = at or _now().isoformat()
+    fan["isFollower"] = True
+    fan["followedAt"] = at
+    fan.pop("unfollowedAt", None)
+    append_status_event(fan, "followed", at=at, source=source)
+    return True
+
+
+def mark_unfollowed(fan: dict, *, at: str | None = None, source: str = "reconcile") -> bool:
+    """follower -> not-follower. Records an `unfollowed` event. No-op if not following."""
+    if not fan.get("isFollower"):
+        return False
+    at = at or _now().isoformat()
+    fan["isFollower"] = False
+    fan["unfollowedAt"] = at
+    append_status_event(fan, "unfollowed", at=at, source=source)
+    return True
+
+
 def compute_session(fan_id: str) -> tuple[str, bool]:
     """Return (session_id, is_new). New session if gap since lastSeenAt exceeds threshold."""
     fan = get_fan(fan_id)

@@ -103,3 +103,19 @@ def test_admin_reconcile_auth_guard(monkeypatch):
     assert client.post("/admin/reconcile").status_code == 401
     assert client.post("/admin/reconcile",
                        headers={"x-sim-secret": "topsecret"}).status_code == 200
+
+
+def test_admin_fan_thread_auth_and_shape(monkeypatch):
+    monkeypatch.setattr(settings, "SIM_SECRET", "topsecret")
+    import store
+    store.use_namespace_for("sim:threadtest")
+    store.save_message("sim:threadtest", "fan", "hi jenny")
+    store.save_message("sim:threadtest", "jenny", "hey you 😏")
+
+    assert client.get("/admin/fan_thread?fan=sim:threadtest").status_code == 401
+    r = client.get("/admin/fan_thread?fan=sim:threadtest",
+                   headers={"x-sim-secret": "topsecret"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 2
+    assert [m["role"] for m in body["messages"]] == ["fan", "jenny"]

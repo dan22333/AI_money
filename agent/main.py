@@ -120,6 +120,26 @@ def reconcile(x_sim_secret: str | None = Header(default=None)):
     return _reconcile.run()
 
 
+@app.get("/admin/fan_thread")
+def fan_thread(fan: str, limit: int = 200, x_sim_secret: str | None = Header(default=None)):
+    """Read-only: dump one fan's stored profile + full message thread (backfilled
+    history + live webhook turns interleaved by ts). Ops visibility for a specific
+    conversation. sim-secret protected; namespaced by the fan id."""
+    if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    import store
+    store.use_namespace_for(fan)
+    f = store.get_fan(fan)
+    msgs = store.recent_messages(fan, limit=limit)
+    keep = ("fanUuid", "handle", "displayName", "subscriptionStatus", "isFollower",
+            "totalSpendCents", "tier", "purchaseCount", "statusEvents",
+            "subscribedAt", "unsubscribedAt", "followedAt", "unfollowedAt")
+    return {"fan": {k: f.get(k) for k in keep if k in f},
+            "count": len(msgs),
+            "messages": [{"role": m.get("role"), "text": m.get("text"), "ts": m.get("ts"),
+                          "source": m.get("source")} for m in msgs]}
+
+
 @app.post("/admin/memcheck")
 def memcheck(x_sim_secret: str | None = Header(default=None)):
     """Real memory write+read roundtrip in the STAGING collection. The canary

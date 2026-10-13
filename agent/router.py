@@ -86,8 +86,7 @@ def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: b
         if fan:
             store.use_namespace_for(fan)
             f = store.get_fan(fan)
-            f["subscriptionStatus"] = "active"
-            f["subscribedAt"] = store._now().isoformat()
+            store.mark_subscribed(f, source="webhook")  # records a lifecycle event
             store.save_fan(f)
         return {"status": "subscriber_added"}
 
@@ -96,7 +95,9 @@ def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: b
         fan = follower.get("uuid")
         if fan:
             store.use_namespace_for(fan)
-            store.get_fan(fan)
+            f = store.get_fan(fan)
+            store.mark_followed(f, source="webhook")  # also sets isFollower (was missing)
+            store.save_fan(f)
         return {"status": "follower_added"}
 
     return {"status": "ignored", "type": etype}
