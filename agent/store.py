@@ -113,6 +113,13 @@ class MemoryBackend:
         vals = list(self._subs.get(self._skey(col, doc_id, sub), {}).values())
         return [copy.deepcopy(d) for d in vals[-limit:]]
 
+    def sub_since(self, col, doc_id, sub, order_field, since, limit) -> List[dict]:
+        vals = self._subs.get(self._skey(col, doc_id, sub), {}).values()
+        rows = [copy.deepcopy(d) for d in vals
+                if not since or str(d.get(order_field, "")) > since]
+        rows.sort(key=lambda d: str(d.get(order_field, "")))
+        return rows[:limit]
+
     def sub_count(self, col, doc_id, sub) -> int:
         return len(self._subs.get(self._skey(col, doc_id, sub), {}))
 
@@ -184,6 +191,14 @@ class FirestoreBackend:
         rows = [s.to_dict() for s in q.stream()]
         rows.reverse()  # newest-first query → return chronological
         return rows
+
+    def sub_since(self, col, doc_id, sub, order_field, since, limit):
+        from google.cloud.firestore_v1.base_query import FieldFilter
+        q = self._subref(col, doc_id, sub)
+        if since:
+            q = q.where(filter=FieldFilter(order_field, ">", since))
+        q = q.order_by(order_field).limit(limit)  # range + order on same field → no composite index
+        return [s.to_dict() for s in q.stream()]
 
     def sub_count(self, col, doc_id, sub):
         return sum(1 for _ in self._subref(col, doc_id, sub).stream())
@@ -370,6 +385,14 @@ def upsert_message(fan_id: str, msg_uuid: str, role: str, text: str, *,
 
 def recent_messages(fan_id: str, limit: int = 15) -> List[dict]:
     return _backend().sub_recent(FANS, fan_id, MESSAGES, "ts", limit)
+
+
+def messages_since(fan_id: str, since: str = "", limit: int = 1000) -> List[dict]:
+    """Stored messages with ts strictly after `since` (ISO string), oldest first,
+    capped at `limit`. `since` empty → from the beginning. Used by the mem0
+    backfill to feed only not-yet-extracted history (watermarked); resumable —
+    a run that hits the cap advances the watermark and the next run continues."""
+    return _backend().sub_since(FANS, fan_id, MESSAGES, "ts", since, limit)
 
 
 def message_count(fan_id: str) -> int:

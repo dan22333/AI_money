@@ -142,6 +142,43 @@ def add_turn(fan_id: str, fan_text: str, jenny_text: str) -> None:
     _fallback.setdefault(fan_id, []).append(f"fan said: {fan_text}")
 
 
+def backfill(fan_id: str, turns: List[dict]) -> int:
+    """One-time fact extraction over backfilled chat history.
+
+    `turns` is a chronological list of {"role": "fan"|"jenny", "text": str}.
+    Unlike add_turn (one live exchange), this feeds many stored messages in
+    batches of settings.MEMORY_BACKFILL_CHUNK per mem0 add() call, so the number
+    of extraction-LLM calls scales with history/chunk rather than per message —
+    the bit that actually costs money/time when a fan has a long backlog.
+
+    No-op (returns 0) when memory is disabled or the client failed to init, so
+    backfill is free locally/in CI. Never raises — a memory hiccup must not abort
+    the reconcile. Returns the number of messages fed to mem0.
+    """
+    if not settings.MEMORY_ENABLED:
+        return 0
+    client = _client_for(store.current_namespace())
+    if client is None:
+        return 0
+    msgs = []
+    for t in turns:
+        text = (t.get("text") or "").strip()
+        if not text:
+            continue
+        role = "assistant" if t.get("role") == "jenny" else "user"
+        msgs.append({"role": role, "content": text})
+    fed = 0
+    chunk = max(1, settings.MEMORY_BACKFILL_CHUNK)
+    for i in range(0, len(msgs), chunk):
+        batch = msgs[i:i + chunk]
+        try:
+            client.add(messages=batch, user_id=fan_id)
+            fed += len(batch)
+        except Exception as e:  # pragma: no cover - degrade, never abort reconcile
+            print(f"[memory] backfill add failed for {fan_id}: {e}")
+    return fed
+
+
 def add_fact(fan_id: str, fact: str) -> None:
     """Explicitly store a single fact (used by the save_fact tool)."""
     client = _client_for(store.current_namespace())

@@ -22,7 +22,9 @@ Targets the PRODUCTION namespace (real fans). No-ops if Fanvue isn't connected.
 """
 from __future__ import annotations
 
+import memory
 import store
+from config import settings
 from fanvue_client import fanvue
 
 
@@ -131,10 +133,36 @@ def _sync_earnings() -> int:
     return {"purchasesSynced": n}
 
 
+def _backfill_memory(fan_uuid: str) -> int:
+    """Extract durable facts from this fan's stored (backfilled) chat history into
+    mem0, once. Reads from the STORE — not this reconcile's Fanvue pull — so
+    history imported by EARLIER runs (before this path existed) still gets
+    extracted; the live `/webhook` path has no idea whether a fan was ever
+    backfilled. Only messages carrying a Fanvue messageUuid are fed: live webhook
+    turns already went through memory.add_turn at write time, so re-feeding them
+    would just burn extraction-LLM calls. Watermarked by `mem:{uuid}` (advanced to
+    the newest ts we looked at) so re-runs don't re-extract, and resumable via
+    MEMORY_BACKFILL_LIMIT."""
+    meta = store.get_sync_meta(f"mem:{fan_uuid}")
+    through = meta.get("through", "")
+    window = store.messages_since(fan_uuid, through, limit=settings.MEMORY_BACKFILL_LIMIT)
+    if not window:
+        return 0
+    turns = [{"role": m.get("role", "fan"), "text": m.get("text", "")}
+             for m in window if m.get("messageUuid")]
+    fed = memory.backfill(fan_uuid, turns)
+    newest = max((m.get("ts", "") for m in window), default="")
+    if newest and newest > through:
+        store.set_sync_meta(f"mem:{fan_uuid}", {"through": newest})
+    return fed
+
+
 def _sync_messages(creator_uuid: str) -> dict:
     """Backfill full chat history (both directions), idempotent by messageUuid.
-    Per-chat delta via the last sentAt watermark."""
+    Per-chat delta via the last sentAt watermark. Then feed the imported history
+    into long-term memory (mem0) so backfilled fans aren't a blank slate."""
     n = 0
+    extracted = 0
     for chat in fanvue.list_chats(unread_only=False):
         user = chat.get("user") or {}
         uuid = user.get("uuid")
@@ -157,7 +185,8 @@ def _sync_messages(creator_uuid: str) -> dict:
                 latest = sent
         if latest and latest != since:
             store.set_sync_meta(f"chat:{uuid}", {"lastSentAt": latest})
-    return {"messagesSynced": n}
+        extracted += _backfill_memory(uuid)
+    return {"messagesSynced": n, "memoriesBackfilled": extracted}
 
 
 def _sync_media() -> dict:
