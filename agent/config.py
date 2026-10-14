@@ -60,6 +60,12 @@ class Settings:
     # Base pgvector collection for real fans; sim traffic uses "<base>_sim"
     # (staging isolation, mirrors the Firestore named-DB split).
     MEMORY_COLLECTION = os.environ.get("MEMORY_COLLECTION", "fan_memories")
+    # mem0 backfill (reconcile → long-term memory): messages per extraction-LLM
+    # call (one add() per chunk, so cost scales with history/chunk, not history),
+    # and the max messages a single reconcile run extracts per fan — hitting the
+    # cap just advances the `mem:` watermark so the next run resumes.
+    MEMORY_BACKFILL_CHUNK = int(os.environ.get("MEMORY_BACKFILL_CHUNK", "20"))
+    MEMORY_BACKFILL_LIMIT = int(os.environ.get("MEMORY_BACKFILL_LIMIT", "500"))
 
     # --- Message store (Firestore) ---
     GCP_PROJECT = os.environ.get("GCP_PROJECT", "capsule-487202")

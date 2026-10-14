@@ -5,6 +5,7 @@ merged by uuid), purchases (earnings, gross>0, idempotent by transactionOrderId)
 message history (both directions, idempotent by messageUuid) and the media
 catalog. Delta watermarks make re-runs safe without double-counting.
 """
+import memory
 import reconcile
 import store
 
@@ -155,6 +156,43 @@ def test_reconcile_backfills_message_history(monkeypatch):
     assert by_uuid["m2"]["role"] == "jenny"   # creator == jenny
     # real sent time is preserved so it interleaves with live webhook messages
     assert by_uuid["m1"]["ts"] == "2026-10-05T10:00:00Z"
+
+
+def test_reconcile_extracts_backfilled_history_into_memory(monkeypatch):
+    """Imported chat history must be fed to mem0 so a backfilled fan isn't a blank
+    slate — but ONLY messageUuid-bearing (backfilled) messages, not live turns
+    (those already went through add_turn), and watermarked so re-runs don't
+    re-extract."""
+    calls = []
+    monkeypatch.setattr(memory, "backfill", lambda fan_id, turns: calls.append((fan_id, turns)) or len(turns))
+
+    fake = FakeFanvue(
+        me={"uuid": "creator-0"},
+        chats=[{"user": {"uuid": "fan-m"}}],
+        chat_messages={"fan-m": [
+            {"uuid": "mm1", "text": "my dog is called rex", "sender": {"uuid": "fan-m"},
+             "sentAt": "2026-10-05T10:00:00Z"},
+            {"uuid": "mm2", "text": "aw cute", "sender": {"uuid": "creator-0"},
+             "sentAt": "2026-10-05T10:01:00Z"},
+        ]},
+    )
+    _patch(monkeypatch, fake)
+
+    # a live message already in the store (no messageUuid) must be EXCLUDED from
+    # the backfill feed — the live path already remembered it.
+    store.use_namespace_for("fan-m")
+    store.save_message("fan-m", "fan", "live hello (already in mem0)")
+
+    out = reconcile.run()
+    assert out["memoriesBackfilled"] == 2            # only mm1 + mm2 fed
+    assert len(calls) == 1
+    fed_texts = [t["text"] for t in calls[0][1]]
+    assert fed_texts == ["my dog is called rex", "aw cute"]  # live msg not fed
+
+    # second pass: watermark is past everything → nothing re-extracted
+    calls.clear()
+    out2 = reconcile.run()
+    assert out2["memoriesBackfilled"] == 0
 
 
 def test_reconcile_backfills_media_catalog(monkeypatch):
