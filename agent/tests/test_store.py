@@ -68,3 +68,38 @@ def test_purchase_is_idempotent():
     store.add_purchase("sim:f", "inv1", gross_cents=500, source="tip")
     store.add_purchase("sim:f", "inv1", gross_cents=500, source="tip")
     assert store.get_fan("sim:f")["purchaseCount"] == 1
+
+
+# ---------------- message dedup (#3) ----------------
+def test_upsert_message_is_idempotent_by_uuid():
+    store.use_namespace_for("fan-u")
+    assert store.upsert_message("fan-u", "m1", "fan", "hey") is True
+    assert store.upsert_message("fan-u", "m1", "fan", "hey again") is False  # same uuid → no-op
+    assert store.message_count("fan-u") == 1
+
+
+def test_dedup_live_messages_removes_shadowed_random_copies():
+    store.use_namespace_for("fan-d")
+    # pre-fix live write: random doc id, no messageUuid (both sides)
+    store.save_message("fan-d", "fan", "hi jenny")
+    store.save_message("fan-d", "jenny", "heyy babe")
+    # reconcile re-pull: the SAME messages, now keyed by their Fanvue uuid
+    store.upsert_message("fan-d", "u-fan", "fan", "hi jenny")
+    store.upsert_message("fan-d", "u-jen", "jenny", "heyy babe")
+    assert store.message_count("fan-d") == 4  # duplicated
+
+    dry = store.dedup_live_messages("fan-d")
+    assert dry["duplicates"] == 2 and dry["deleted"] == 0  # dry-run never deletes
+    assert store.message_count("fan-d") == 4
+
+    applied = store.dedup_live_messages("fan-d", apply=True)
+    assert applied["deleted"] == 2
+    assert store.message_count("fan-d") == 2  # only the canonical uuid-keyed docs remain
+    assert all(m.get("messageUuid") for m in store.recent_messages("fan-d", limit=10))
+
+
+def test_dedup_keeps_random_copies_without_a_uuid_twin():
+    store.use_namespace_for("fan-s")
+    store.save_message("fan-s", "jenny", "reply that reconcile never re-pulled")
+    applied = store.dedup_live_messages("fan-s", apply=True)
+    assert applied["deleted"] == 0 and store.message_count("fan-s") == 1

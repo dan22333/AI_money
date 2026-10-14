@@ -51,13 +51,21 @@ def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: b
         fan = (sender.get("uuid") or sender.get("userUuid") or sender.get("id")
                or data.get("senderUuid"))
         text = message.get("text") or message.get("content") or message.get("body") or ""
+        # messageUuid identifies THIS inbound message — thread it through so the
+        # live write is keyed by it and the nightly reconcile re-pull no-ops
+        # instead of storing a duplicate (#3). Enveloped shape puts it on `message`,
+        # legacy flat shape puts it at the top level.
+        fan_msg_uuid = (message.get("uuid") or message.get("messageUuid")
+                        or data.get("messageUuid") or "")
         print(f"[webhook] message parsed fan={fan!r} text_len={len(text) if text else 0} "
-              f"sender_keys={list(sender.keys())} message_keys={list(message.keys())}")
+              f"uuid={fan_msg_uuid!r} sender_keys={list(sender.keys())} "
+              f"message_keys={list(message.keys())}")
         if not fan or not text:
             print("[webhook] IGNORED message: could not find sender uuid and/or text "
                   "— real payload shape differs from the parse above")
             return {"status": "ignored", "reason": "missing sender/text"}
-        out = graph.handle_message(fan_id=fan, user_uuid=fan, text=text, dry_run=dry_run)
+        out = graph.handle_message(fan_id=fan, user_uuid=fan, text=text,
+                                   fan_msg_uuid=fan_msg_uuid, dry_run=dry_run)
         print(f"[webhook] replied mode={out.get('mode')} reply_len={len(out.get('reply') or '')} "
               f"actions={len(out.get('actions') or [])}")
         return {"status": "replied", **out}

@@ -123,6 +123,13 @@ class MemoryBackend:
     def sub_count(self, col, doc_id, sub) -> int:
         return len(self._subs.get(self._skey(col, doc_id, sub), {}))
 
+    def sub_items(self, col, doc_id, sub) -> List[tuple]:
+        return [(k, copy.deepcopy(v))
+                for k, v in self._subs.get(self._skey(col, doc_id, sub), {}).items()]
+
+    def sub_delete(self, col, doc_id, sub, sub_id) -> None:
+        self._subs.get(self._skey(col, doc_id, sub), {}).pop(_docid(sub_id), None)
+
     def clear(self) -> None:
         self._docs.clear()
         self._subs.clear()
@@ -202,6 +209,12 @@ class FirestoreBackend:
 
     def sub_count(self, col, doc_id, sub):
         return sum(1 for _ in self._subref(col, doc_id, sub).stream())
+
+    def sub_items(self, col, doc_id, sub):
+        return [(s.id, s.to_dict()) for s in self._subref(col, doc_id, sub).stream()]
+
+    def sub_delete(self, col, doc_id, sub, sub_id):
+        self._subref(col, doc_id, sub).document(_docid(sub_id)).delete()
 
     def clear(self) -> None:
         """Delete all docs in the known collections (+ their subcollections).
@@ -366,11 +379,15 @@ def save_message(fan_id: str, role: str, text: str, *, media_uuids=None,
 
 
 def upsert_message(fan_id: str, msg_uuid: str, role: str, text: str, *,
-                   sent_at: str = "", media_uuids=None, price_cents: int = 0) -> bool:
-    """Idempotent message store keyed by Fanvue messageUuid — used by the backfill
-    so re-running reconcile never duplicates history. Returns True if newly written.
-    `ts` is set to the message's real sent time so it interleaves correctly with
-    live webhook messages in recent_messages()."""
+                   sent_at: str = "", media_uuids=None, price_cents: int = 0,
+                   mode: str = "", session_id: str = "") -> bool:
+    """Idempotent message store keyed by Fanvue messageUuid. Used by BOTH the
+    nightly backfill AND the live webhook path (fan inbound keyed by the webhook's
+    messageUuid, Jenny's reply keyed by the uuid the send API returns) so the two
+    paths write the SAME doc id — re-running reconcile over already-live messages
+    collides and no-ops instead of creating a second, random-id copy. Returns True
+    if newly written. `ts` is the real sent time so it interleaves correctly with
+    other messages in recent_messages()."""
     if not msg_uuid:
         return False
     if _backend().sub_get(FANS, fan_id, MESSAGES, msg_uuid) is not None:
@@ -378,13 +395,42 @@ def upsert_message(fan_id: str, msg_uuid: str, role: str, text: str, *,
     _backend().sub_set(FANS, fan_id, MESSAGES, msg_uuid,
                        {"fan_id": fan_id, "role": role, "text": text, "messageUuid": msg_uuid,
                         "mediaUuids": media_uuids or [], "priceCents": price_cents,
-                        "mode": "", "sessionId": "", "ts": sent_at or _now().isoformat(),
+                        "mode": mode, "sessionId": session_id,
+                        "ts": sent_at or _now().isoformat(),
                         "source": "sim" if fan_id.startswith("sim:") else "fanvue"})
     return True
 
 
 def recent_messages(fan_id: str, limit: int = 15) -> List[dict]:
     return _backend().sub_recent(FANS, fan_id, MESSAGES, "ts", limit)
+
+
+def dedup_live_messages(fan_id: str, *, apply: bool = False) -> dict:
+    """One-time cleanup of the pre-fix double-write. Before messageUuid was
+    threaded through the live path, every live webhook message was stored under a
+    RANDOM doc id with no messageUuid, and the nightly reconcile then re-pulled the
+    same message and stored a SECOND copy keyed by messageUuid. This removes the
+    random-id copies that are now shadowed by a uuid-keyed twin (same role + text),
+    keeping the canonical uuid-keyed doc. Random-id docs with NO uuid-keyed twin
+    (e.g. a reply that never came back from a reconcile pull) are left untouched.
+
+    Dry-run by default: returns {examined, duplicates, deleted}. Pass apply=True to
+    actually delete. Set the namespace (use_namespace_for) before calling."""
+    items = _backend().sub_items(FANS, fan_id, MESSAGES)
+    # canonical keys that exist as a uuid-keyed doc
+    keyed = {(d.get("role"), (d.get("text") or "").strip())
+             for _id, d in items if d.get("messageUuid")}
+    deleted = 0
+    duplicates = 0
+    for sub_id, d in items:
+        if d.get("messageUuid"):
+            continue  # this IS the canonical copy
+        if (d.get("role"), (d.get("text") or "").strip()) in keyed:
+            duplicates += 1
+            if apply:
+                _backend().sub_delete(FANS, fan_id, MESSAGES, sub_id)
+                deleted += 1
+    return {"fan": fan_id, "examined": len(items), "duplicates": duplicates, "deleted": deleted}
 
 
 def messages_since(fan_id: str, since: str = "", limit: int = 1000) -> List[dict]:

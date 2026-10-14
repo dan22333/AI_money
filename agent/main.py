@@ -120,6 +120,32 @@ def reconcile(x_sim_secret: str | None = Header(default=None)):
     return _reconcile.run()
 
 
+@app.post("/admin/dedup_messages")
+def dedup_messages(apply: bool = False, x_sim_secret: str | None = Header(default=None)):
+    """One-time cleanup of the pre-#3 double-write: live webhook messages used to be
+    stored under a random doc id with no messageUuid, then the reconcile re-pull
+    stored a SECOND copy keyed by messageUuid. This sweeps the PROD namespace and
+    drops each random-id copy that now has a uuid-keyed twin (same role+text),
+    keeping the canonical uuid-keyed doc. Dry-run by default — pass ?apply=true to
+    delete. Safe to run repeatedly (idempotent)."""
+    if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    import store
+    store.use_namespace_for("__reconcile__")  # select the prod (non-sim) namespace
+    per_fan = []
+    totals = {"examined": 0, "duplicates": 0, "deleted": 0}
+    for fan in store.list_fans():
+        uuid = fan.get("fanUuid")
+        if not uuid or str(uuid).startswith("sim:"):
+            continue
+        r = store.dedup_live_messages(uuid, apply=apply)
+        if r["duplicates"]:
+            per_fan.append(r)
+        for k in totals:
+            totals[k] += r[k]
+    return {"apply": apply, "fans_with_dupes": len(per_fan), **totals, "detail": per_fan}
+
+
 @app.get("/admin/fan_thread")
 def fan_thread(fan: str, limit: int = 200, x_sim_secret: str | None = Header(default=None)):
     """Read-only: dump one fan's stored profile + full message thread (backfilled
