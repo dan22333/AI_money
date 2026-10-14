@@ -90,6 +90,31 @@ def test_pg_connection_string_tcp_host(monkeypatch):
     assert memory._pg_connection_string() == "postgresql://postgres:secret@127.0.0.1:5432/jenny"
 
 
+def test_backfill_stops_at_first_failed_chunk(monkeypatch):
+    """backfill reports how far it got and STOPS on the first failing chunk, so
+    the caller's watermark can't skip facts that never landed in mem0."""
+    monkeypatch.setattr(settings, "MEMORY_ENABLED", True)
+    monkeypatch.setattr(settings, "MEMORY_BACKFILL_CHUNK", 2)
+
+    calls = {"n": 0}
+
+    class Flaky(FakeMem0):
+        def add(self, messages, user_id, infer=True):
+            calls["n"] += 1
+            if calls["n"] == 2:                 # the SECOND chunk blows up
+                raise RuntimeError("mem0 down")
+            super().add(messages, user_id, infer=infer)
+
+    flaky = Flaky("fan_memories")
+    monkeypatch.setattr(memory, "_client_for", lambda ns: flaky)
+
+    store.use_namespace_for("fan-x")
+    turns = [{"role": "fan", "text": f"t{i}"} for i in range(5)]  # chunks: [t0,t1][t2,t3][t4]
+    fed = memory.backfill("fan-x", turns)
+    assert fed == 2                              # only the first chunk landed
+    assert flaky.data["fan-x"] == ["t0", "t1"]   # nothing after the failure stored
+
+
 def test_selftest_ok_and_disabled(monkeypatch):
     # disabled → reports disabled, doesn't touch any client
     monkeypatch.setattr(settings, "MEMORY_ENABLED", False)

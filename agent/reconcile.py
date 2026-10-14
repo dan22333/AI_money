@@ -148,12 +148,28 @@ def _backfill_memory(fan_uuid: str) -> int:
     window = store.messages_since(fan_uuid, through, limit=settings.MEMORY_BACKFILL_LIMIT)
     if not window:
         return 0
-    turns = [{"role": m.get("role", "fan"), "text": m.get("text", "")}
-             for m in window if m.get("messageUuid")]
+    # feed only backfilled (messageUuid) turns with real text; live webhook turns
+    # already went through memory.add_turn. `feed` stays aligned with the count
+    # memory.backfill returns so we can map "fed K turns" back to a timestamp.
+    feed = [m for m in window if m.get("messageUuid") and (m.get("text") or "").strip()]
+    turns = [{"role": m.get("role", "fan"), "text": m["text"]} for m in feed]
     fed = memory.backfill(fan_uuid, turns)
-    newest = max((m.get("ts", "") for m in window), default="")
-    if newest and newest > through:
-        store.set_sync_meta(f"mem:{fan_uuid}", {"through": newest})
+    # Advance the watermark ONLY as far as what actually landed in mem0:
+    #  - everything fed  → jump to the newest message we looked at (also skips
+    #    past trailing live-only messages so we don't re-scan them)
+    #  - partial feed     → stop at the last CONFIRMED turn, so the un-fed tail is
+    #    re-read and retried next run instead of being silently skipped
+    #  - nothing fed      → don't move (memory off, or the very first chunk failed)
+    if turns and fed >= len(turns):
+        frontier = max((m.get("ts", "") for m in window), default=through)
+    elif fed > 0:
+        frontier = feed[fed - 1].get("ts", through)
+    elif not turns:
+        frontier = max((m.get("ts", "") for m in window), default=through)
+    else:
+        frontier = through
+    if frontier and frontier > through:
+        store.set_sync_meta(f"mem:{fan_uuid}", {"through": frontier})
     return fed
 
 

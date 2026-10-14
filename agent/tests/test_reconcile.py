@@ -195,6 +195,35 @@ def test_reconcile_extracts_backfilled_history_into_memory(monkeypatch):
     assert out2["memoriesBackfilled"] == 0
 
 
+def test_reconcile_backfill_stops_watermark_on_partial_memory_failure(monkeypatch):
+    """A transient mem0 failure mid-fan must NOT advance the watermark past the
+    un-fed turns — they get retried next run, never silently lost."""
+    fake = FakeFanvue(
+        me={"uuid": "creator-0"},
+        chats=[{"user": {"uuid": "fan-p"}}],
+        chat_messages={"fan-p": [
+            {"uuid": f"p{i}", "text": f"msg {i}", "sender": {"uuid": "fan-p"},
+             "sentAt": f"2026-10-05T10:0{i}:00Z"} for i in range(4)
+        ]},
+    )
+    _patch(monkeypatch, fake)
+
+    # first run: only the first 2 of 4 turns "land" (simulated transient failure)
+    monkeypatch.setattr(memory, "backfill", lambda fan_id, turns: 2)
+    out = reconcile.run()
+    assert out["memoriesBackfilled"] == 2
+    store.use_namespace_for("fan-p")
+    # watermark stopped at the 2nd message's ts, NOT the 4th
+    assert store.get_sync_meta("mem:fan-p")["through"] == "2026-10-05T10:01:00Z"
+
+    # second run: capture what is re-fed — exactly the un-fed tail (msgs 2 & 3)
+    seen = []
+    monkeypatch.setattr(memory, "backfill",
+                        lambda fan_id, turns: seen.append([t["text"] for t in turns]) or len(turns))
+    reconcile.run()
+    assert seen == [["msg 2", "msg 3"]]
+
+
 def test_reconcile_backfills_media_catalog(monkeypatch):
     fake = FakeFanvue()
     fake._media = [{"uuid": "media-1", "description": "beach set", "tags": ["beach"],
