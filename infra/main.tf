@@ -103,7 +103,12 @@ resource "google_sql_database_instance" "jenny_pg" {
   database_version = "POSTGRES_15"
   region           = var.region
   settings {
-    tier              = "db-f1-micro"
+    # Tier sized to hold the HNSW index in RAM and give the connection pool
+    # headroom (micro's ~0.6GB RAM + tiny max_connections can't do either once
+    # fan/vector volume grows). db-g1-small = 1.7GB. NOTE: changing tier RESTARTS
+    # the instance (brief memory-layer downtime) — apply off-peak. Bump further
+    # (db-custom-N-M) as the fact corpus grows.
+    tier              = "db-g1-small"
     availability_type = "ZONAL"
     disk_size         = 10
     disk_autoresize   = true
@@ -113,6 +118,13 @@ resource "google_sql_database_instance" "jenny_pg" {
     backup_configuration {
       enabled = true
     }
+    # Cross-instance connection budget: each Cloud Run instance opens up to
+    # MEMORY_PG_MAXCONN connections, and they SUM at Postgres. Keep
+    # MEMORY_PG_MAXCONN x maxScale under this instance's max_connections, OR enable
+    # Cloud SQL managed connection pooling (transaction mode) so the pooler
+    # multiplexes many instances onto a few backend connections. Managed pooling is
+    # toggled on the instance (console/gcloud) and is the right answer beyond a
+    # handful of instances — see docs/debounce.md + memory layer notes.
   }
   # Prevent accidental teardown of the fan-memory database.
   deletion_protection = true
@@ -210,9 +222,31 @@ resource "google_cloud_tasks_queue" "process" {
   depends_on = [google_project_service.apis]
 }
 
-# The runtime SA creates tasks on the queue (enqueue from the webhook). The worker
-# endpoint is authorized by the sim-secret header the task carries, so no
-# run.invoker binding is needed while the service allows unauthenticated.
+# Extraction fan-out (MEMORY_FANOUT_ENABLED): mem0 fact-extraction + history
+# backfill run as their OWN tasks here (one per turn / per fan) instead of inline,
+# so slow LLM-bound learning never blocks a reply or a reconcile run. Lower
+# dispatch rate than the reply queue — extraction is background work and its rate
+# is really bounded by the LLM provider, not us.
+resource "google_cloud_tasks_queue" "extract" {
+  name     = "jenny-extract"
+  location = var.region
+
+  rate_limits {
+    max_dispatches_per_second = 10
+    max_concurrent_dispatches = 10
+  }
+  retry_config {
+    max_attempts       = 5
+    min_backoff        = "10s"
+    max_backoff        = "300s"
+    max_retry_duration = "3600s"
+  }
+  depends_on = [google_project_service.apis]
+}
+
+# The runtime SA creates tasks on the queues (enqueue from the webhook / reconcile).
+# The worker endpoints are authorized by the sim-secret header the task carries, so
+# no run.invoker binding is needed while the service allows unauthenticated.
 resource "google_project_iam_member" "runtime_tasks_enqueuer" {
   project = var.project
   role    = "roles/cloudtasks.enqueuer"

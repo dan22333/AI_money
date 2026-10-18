@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import memory
 import store
+import tasks
 from config import settings
 from fanvue_client import fanvue
 
@@ -179,6 +180,7 @@ def _sync_messages(creator_uuid: str) -> dict:
     into long-term memory (mem0) so backfilled fans aren't a blank slate."""
     n = 0
     extracted = 0
+    queued = 0
     for chat in fanvue.list_chats(unread_only=False):
         user = chat.get("user") or {}
         uuid = user.get("uuid")
@@ -214,8 +216,14 @@ def _sync_messages(creator_uuid: str) -> dict:
         # (newer than our last reply) stays pending and is swept by the next
         # webhook. Reconcile deliberately never enqueues a reply itself.
         store.advance_watermark_to(uuid, latest_jenny)
-        extracted += _backfill_memory(uuid)
-    return {"messagesSynced": n, "memoriesBackfilled": extracted}
+        # Extraction fan-out: enqueue a per-fan backfill task so many fans extract
+        # in parallel (rate-limited by the queue) instead of sequentially in this
+        # one request. Falls back to inline when fan-out isn't wired up.
+        if tasks.enqueue_backfill_memory(uuid):
+            queued += 1
+        else:
+            extracted += _backfill_memory(uuid)
+    return {"messagesSynced": n, "memoriesBackfilled": extracted, "memoriesQueued": queued}
 
 
 def _sync_media() -> dict:

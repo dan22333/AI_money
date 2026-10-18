@@ -71,6 +71,11 @@ def _mem0_config(collection: str) -> dict:
                 "connection_string": _pg_connection_string(),
                 "collection_name": collection,
                 "embedding_model_dims": settings.EMBED_DIM,
+                # scaling knobs (mem0-native): HNSW index for fast ANN recall +
+                # a per-process connection pool. Defaults keep today's behavior.
+                "hnsw": settings.MEMORY_USE_HNSW,
+                "minconn": settings.MEMORY_PG_MINCONN,
+                "maxconn": settings.MEMORY_PG_MAXCONN,
             },
         },
         "embedder": {

@@ -136,6 +136,44 @@ def process_fan(inp: ProcessFanIn, request: Request,
     return debounce.process_fan(inp.fan_id, inp.user_uuid or inp.fan_id, is_retry=is_retry)
 
 
+class ExtractMemoryIn(BaseModel):
+    fan_id: str
+    incoming: str = ""
+    final: str = ""
+
+
+@app.post("/admin/extract_memory")
+def extract_memory(inp: ExtractMemoryIn, x_sim_secret: str | None = Header(default=None)):
+    """Cloud Tasks worker for extraction fan-out (MEMORY_FANOUT_ENABLED): runs the
+    mem0 fact-extraction + summary for one turn off the reply path. Idempotent
+    enough to retry (mem0 de-dupes facts). sim-secret protected."""
+    if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    import graph
+    import store
+    store.use_namespace_for(inp.fan_id)
+    graph.learn_from_turn(inp.fan_id, inp.incoming, inp.final)
+    return {"status": "learned", "fan": inp.fan_id}
+
+
+class BackfillMemoryIn(BaseModel):
+    fan_id: str
+
+
+@app.post("/admin/backfill_memory")
+def backfill_memory(inp: BackfillMemoryIn, x_sim_secret: str | None = Header(default=None)):
+    """Cloud Tasks worker for extraction fan-out: backfills one fan's stored history
+    into mem0 (watermarked, resumable). Reconcile enqueues one of these per fan so
+    the backfill parallelizes instead of running sequentially in one request."""
+    if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    import reconcile as _reconcile
+    import store
+    store.use_namespace_for(inp.fan_id)
+    extracted = _reconcile._backfill_memory(inp.fan_id)
+    return {"status": "backfilled", "fan": inp.fan_id, "extracted": extracted}
+
+
 class RecallEvalIn(BaseModel):
     fan_id: str
     message: str

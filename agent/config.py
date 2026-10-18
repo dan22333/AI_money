@@ -57,6 +57,22 @@ class Settings:
     EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-004")
     EMBED_DIM = int(os.environ.get("EMBED_DIM", "768"))
     VERTEX_REGION = os.environ.get("VERTEX_REGION", "us-central1")
+    # pgvector scaling (mem0 supports both natively). HNSW = approximate-nearest-
+    # neighbour index so recall stays fast as total fact-vectors grow (mem0 runs
+    # CREATE INDEX IF NOT EXISTS ... USING hnsw on create_col — idempotent). OFF by
+    # default; turn on together with a DB tier that has RAM to hold the index.
+    # minconn/maxconn size mem0's per-process connection pool — keep maxconn ×
+    # max Cloud Run instances under the DB's max_connections (or front with a pooler).
+    MEMORY_USE_HNSW = os.environ.get("MEMORY_USE_HNSW", "false").lower() == "true"
+    MEMORY_PG_MINCONN = int(os.environ.get("MEMORY_PG_MINCONN", "1"))
+    MEMORY_PG_MAXCONN = int(os.environ.get("MEMORY_PG_MAXCONN", "5"))
+    # Extraction fan-out: when true, the live reply path + reconcile ENQUEUE a
+    # Cloud Tasks job for mem0 fact-extraction instead of running it inline, so the
+    # (slow, LLM-bound) learning never blocks a reply or a reconcile run. OFF by
+    # default → inline (today's behavior). Needs the jenny-extract queue + the
+    # same SERVICE_BASE_URL plumbing as debounce.
+    MEMORY_FANOUT_ENABLED = os.environ.get("MEMORY_FANOUT_ENABLED", "false").lower() == "true"
+    EXTRACT_TASKS_QUEUE = os.environ.get("EXTRACT_TASKS_QUEUE", "jenny-extract")
     # Base pgvector collection for real fans; sim traffic uses "<base>_sim"
     # (staging isolation, mirrors the Firestore named-DB split).
     MEMORY_COLLECTION = os.environ.get("MEMORY_COLLECTION", "fan_memories")
