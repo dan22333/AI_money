@@ -105,6 +105,9 @@ jobs:
           BASE_URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format='value(status.url)' 2>/dev/null || true)
           RUNTIME_SA="jenny-runtime@${PROJECT}.iam.gserviceaccount.com"
           ENVS="${ENVS},DEBOUNCE_ENABLED=false,TASKS_QUEUE=jenny-process,TASKS_LOCATION=${REGION},SERVICE_BASE_URL=${BASE_URL},TASKS_INVOKER_SA=${RUNTIME_SA}"
+          # Memory scaling (all shipped OFF — flip after the DB tier bump / queue apply):
+          # HNSW index + pgvector pool sizing, and extraction fan-out onto jenny-extract.
+          ENVS="${ENVS},MEMORY_USE_HNSW=false,MEMORY_PG_MINCONN=1,MEMORY_PG_MAXCONN=5,MEMORY_FANOUT_ENABLED=false,EXTRACT_TASKS_QUEUE=jenny-extract"
           if gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
             NO_TRAFFIC="--no-traffic"
             echo "Service exists → candidate at 0% traffic (canary)."

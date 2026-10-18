@@ -124,10 +124,11 @@ def process_fan(fan_id: str, user_uuid: str, *, is_retry: bool = False) -> dict:
 
     # 9: post-reply bookkeeping OUTSIDE the lease — the fan already has the reply and
     # the lock is released, so mem0 fact-extraction (~1-3s) + summary don't block the
-    # next batch for this fan. Best-effort: a failure here never loses the reply or
-    # the watermark (reconcile re-extracts facts from stored history).
+    # next batch for this fan. maybe_learn enqueues it (fan-out) or runs it inline.
+    # Best-effort: a failure here never loses the reply or the watermark (reconcile
+    # re-extracts facts from stored history).
     try:
-        graph.learn_from_turn(fan_id, batch_text, out.get("reply") or "")
+        graph.maybe_learn(fan_id, batch_text, out.get("reply") or "")
     except Exception as e:
         print(f"[debounce] post-reply learn failed (non-fatal): {type(e).__name__}: {e}")
 

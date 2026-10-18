@@ -19,6 +19,7 @@ import memory
 import modes
 import store
 import summary
+import tasks
 import tools
 from config import settings
 
@@ -231,11 +232,20 @@ def learn_from_turn(fan_id: str, incoming: str, final: str) -> None:
                                         "summarizedAtCount": fan.get("summarizedAtCount", 0)})
 
 
+def maybe_learn(fan_id: str, incoming: str, final: str) -> None:
+    """Run the post-reply learning, or ENQUEUE it when fan-out is on. With fan-out,
+    mem0 extraction + summary happen in a separate Cloud Tasks worker
+    (/admin/extract_memory) so they never block the reply path; otherwise inline."""
+    if tasks.enqueue_extract_memory(fan_id, incoming, final):
+        return
+    learn_from_turn(fan_id, incoming, final)
+
+
 def _persist_reply(fan_id: str, incoming: str, final: str, *, mode: str,
                    session_id: str, jenny_uuid: str) -> None:
-    """Synchronous path: store the reply then learn, in one shot (unchanged)."""
+    """Synchronous path: store the reply then learn (inline or fan-out)."""
     _record_reply(fan_id, final, mode=mode, session_id=session_id, jenny_uuid=jenny_uuid)
-    learn_from_turn(fan_id, incoming, final)
+    maybe_learn(fan_id, incoming, final)
 
 
 def _final_text(result: dict) -> str:
