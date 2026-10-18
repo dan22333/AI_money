@@ -107,21 +107,118 @@ def _client_for(namespace: str) -> Optional[object]:
     return _clients[namespace]
 
 
-def recall(fan_id: str, query: str, limit: int = 6) -> str:
-    """Return a short bullet list of the most relevant remembered facts."""
+def _search(fan_id: str, query: str, limit: int = 6) -> List[str]:
+    """Low-level semantic search → list of fact strings for ONE query (or recent
+    fallback facts when mem0 is unavailable). Never raises."""
     client = _client_for(store.current_namespace())
     if client is not None:
         try:
             res = client.search(query=query, filters={"user_id": fan_id}, top_k=limit)
             items = res.get("results", res) if isinstance(res, dict) else res
-            facts = [i.get("memory") or i.get("text", "") for i in items]
+            return [f for i in items if (f := (i.get("memory") or i.get("text", "")))]
         except Exception as e:
             print(f"[memory] search failed: {e}")
-            facts = []
-    else:
-        facts = _fallback.get(fan_id, [])[-limit:]
+            return []
+    return [f for f in _fallback.get(fan_id, [])[-limit:] if f]
+
+
+def _format(facts: List[str]) -> str:
     facts = [f for f in facts if f]
     return "\n".join(f"- {f}" for f in facts) if facts else "(nothing remembered yet)"
+
+
+def recall(fan_id: str, query: str, limit: int = 6) -> str:
+    """Return a short bullet list of the most relevant remembered facts (single
+    query — the latest-message strategy). Kept for the simple callers."""
+    return _format(_search(fan_id, query, limit))
+
+
+def _join_turns(recent_turns: List[dict], incoming: str = "") -> str:
+    """Flatten the last few turns (+ the current message) into one query string, so
+    recall has conversational CONTEXT to match on — not just a bare 'hey'."""
+    lines = [f"{t.get('role', 'fan')}: {t.get('text', '')}".strip()
+             for t in recent_turns if (t.get("text") or "").strip()]
+    if incoming:
+        lines.append(f"fan: {incoming}")
+    return "\n".join(lines)
+
+
+_EXPAND_SYSTEM = (
+    "You help a chat AI recall what it already knows about a fan. Given the recent "
+    "conversation, write 2-4 SHORT hypothetical statements describing the KINDS of "
+    "facts probably worth recalling about THIS fan, phrased the way a stored memory "
+    "note would be (e.g. \"the fan works night shifts in healthcare\", \"the fan has "
+    "a pet dog\", \"the fan is planning a trip soon\"). These are search probes, so: "
+    "generalize — capture the kind of fact and keep specifics vague — do NOT copy the "
+    "fan's exact words, and NEVER invent details the fan didn't imply. Output a JSON "
+    "object {\"queries\": [...]}. If nothing is worth recalling, return {\"queries\": []}."
+)
+
+
+def expand_queries(context_text: str, max_queries: int = 3) -> List[str]:
+    """Cheap LLM query-expansion: turn the recent conversation into a few GENERAL
+    retrieval probes (topics, not verbatim echoes) so the vector search matches
+    stored facts even when wording differs and doesn't overfit to the last line.
+    Returns [] on any failure (caller falls back to the plain context query)."""
+    if not (context_text or "").strip():
+        return []
+    import llm
+    try:
+        out = llm.classify_json(_EXPAND_SYSTEM, context_text)
+        qs = out.get("queries") if isinstance(out, dict) else None
+        return [str(q).strip() for q in (qs or []) if str(q).strip()][:max_queries]
+    except Exception as e:
+        print(f"[memory] query expansion failed: {e}")
+        return []
+
+
+def _recall_expanded(fan_id: str, probes: List[str], limit: int) -> List[str]:
+    """Search each probe (up to `limit` facts each), concat in probe order, de-dupe,
+    and cap the whole set at RECALL_MAX_FACTS so the prompt doesn't bloat.
+
+    Sequential ON PURPOSE: every probe goes through the one cached mem0 client,
+    which holds a single pgvector/psycopg2 connection that is NOT safe for
+    concurrent queries — parallel searches would serialize on it or silently error.
+    The cost is small (~0.2s/probe) and off the critical path (this whole call runs
+    in the recall thread, parallel to classify, and the voice model dwarfs it)."""
+    facts: List[str] = []
+    seen: set = set()
+    for p in probes:
+        for f in _search(fan_id, p, limit):
+            if f not in seen:
+                seen.add(f)
+                facts.append(f)
+    return facts[:settings.RECALL_MAX_FACTS]
+
+
+def recall_contextual(fan_id: str, incoming: str, recent_turns: List[dict], *,
+                      strategy: str = "latest", limit: int = 6) -> str:
+    """Strategy-dispatched recall used by the live agent:
+      - 'latest'  : embed the latest message only (legacy)
+      - 'context' : embed the last few turns joined (fixes the bare-'hey' query)
+      - 'expanded': LLM → general probes → union of searches (sharpest, +1 fast call)
+    Falls back a level on empty input so it's always safe."""
+    ctx = _join_turns(recent_turns, incoming)
+    if strategy == "context":
+        return _format(_search(fan_id, ctx or incoming, limit))
+    if strategy == "expanded":
+        probes = expand_queries(ctx, settings.RECALL_EXPANSION_PROBES) or [ctx or incoming]
+        return _format(_recall_expanded(fan_id, probes, limit))
+    return _format(_search(fan_id, incoming or ctx, limit))  # 'latest'
+
+
+def recall_eval(fan_id: str, incoming: str, recent_turns: List[dict], limit: int = 6) -> dict:
+    """Read-only comparison of all three strategies for the SAME input — powers the
+    /admin/recall_eval endpoint so recall quality can be eyeballed against the real
+    memory store before we switch RECALL_STRATEGY. No writes, no side effects."""
+    ctx = _join_turns(recent_turns, incoming)
+    probes = expand_queries(ctx, settings.RECALL_EXPANSION_PROBES)
+    return {
+        "latest": {"query": incoming, "facts": _search(fan_id, incoming, limit)},
+        "context": {"query": ctx, "facts": _search(fan_id, ctx or incoming, limit)},
+        "expanded": {"probes": probes,
+                     "facts": _recall_expanded(fan_id, probes or [ctx or incoming], limit)},
+    }
 
 
 def add_turn(fan_id: str, fan_text: str, jenny_text: str) -> None:

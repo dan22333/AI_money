@@ -90,6 +90,17 @@ class MemoryBackend:
     def list(self, col: str) -> List[dict]:
         return [copy.deepcopy(d) for d in self._docs.get(col, {}).values()]
 
+    def update_atomic(self, col: str, doc_id: str, fn):
+        """Read-modify-write a top-level doc. `fn(current|None) -> (new|None, ret)`:
+        return a new dict to persist (None to leave untouched) and a value to
+        return to the caller. Single-threaded in memory; a real transaction in
+        Firestore (see that backend)."""
+        cur = self.get(col, doc_id)
+        new, ret = fn(cur)
+        if new is not None:
+            self.set(col, doc_id, new)
+        return ret
+
     # subcollections
     def _skey(self, col, doc_id, sub):
         return (col, _docid(doc_id), sub)
@@ -122,6 +133,13 @@ class MemoryBackend:
 
     def sub_count(self, col, doc_id, sub) -> int:
         return len(self._subs.get(self._skey(col, doc_id, sub), {}))
+
+    def sub_items(self, col, doc_id, sub) -> List[tuple]:
+        return [(k, copy.deepcopy(v))
+                for k, v in self._subs.get(self._skey(col, doc_id, sub), {}).items()]
+
+    def sub_delete(self, col, doc_id, sub, sub_id) -> None:
+        self._subs.get(self._skey(col, doc_id, sub), {}).pop(_docid(sub_id), None)
 
     def clear(self) -> None:
         self._docs.clear()
@@ -168,6 +186,25 @@ class FirestoreBackend:
     def list(self, col):
         return [s.to_dict() for s in self.db.collection(col).stream()]
 
+    def update_atomic(self, col, doc_id, fn):
+        """Transactional read-modify-write of one top-level doc. `fn` sees the
+        current dict (or None) and returns (new_dict|None, ret). The read + write
+        run inside one Firestore transaction, so concurrent Cloud Run instances
+        can't both win (used for the per-fan processing lease)."""
+        ref = self.db.collection(col).document(_docid(doc_id))
+        fs = self._fs
+
+        @fs.transactional
+        def _txn(transaction):
+            snap = ref.get(transaction=transaction)
+            cur = snap.to_dict() if snap.exists else None
+            new, ret = fn(cur)
+            if new is not None:
+                transaction.set(ref, new)
+            return ret
+
+        return _txn(self.db.transaction())
+
     def _subref(self, col, doc_id, sub):
         return self.db.collection(col).document(_docid(doc_id)).collection(sub)
 
@@ -202,6 +239,12 @@ class FirestoreBackend:
 
     def sub_count(self, col, doc_id, sub):
         return sum(1 for _ in self._subref(col, doc_id, sub).stream())
+
+    def sub_items(self, col, doc_id, sub):
+        return [(s.id, s.to_dict()) for s in self._subref(col, doc_id, sub).stream()]
+
+    def sub_delete(self, col, doc_id, sub, sub_id):
+        self._subref(col, doc_id, sub).document(_docid(sub_id)).delete()
 
     def clear(self) -> None:
         """Delete all docs in the known collections (+ their subcollections).
@@ -357,34 +400,72 @@ def compute_session(fan_id: str) -> tuple[str, bool]:
 
 # ---------------- messages ----------------
 def save_message(fan_id: str, role: str, text: str, *, media_uuids=None,
-                 price_cents: int = 0, mode: str = "", session_id: str = "") -> None:
-    doc = {"fan_id": fan_id, "role": role, "text": text,
+                 price_cents: int = 0, mode: str = "", session_id: str = "",
+                 via: str = "webhook", kind: str = "") -> None:
+    doc = {"fan_id": fan_id, "role": role, "text": text, "kind": kind,
            "mediaUuids": media_uuids or [], "priceCents": price_cents,
            "mode": mode, "sessionId": session_id, "ts": _now().isoformat(),
+           "via": via,  # how this message entered our store: "webhook" | "reconcile"
            "source": "sim" if fan_id.startswith("sim:") else "fanvue"}
     _backend().sub_add(FANS, fan_id, MESSAGES, doc)
 
 
 def upsert_message(fan_id: str, msg_uuid: str, role: str, text: str, *,
-                   sent_at: str = "", media_uuids=None, price_cents: int = 0) -> bool:
-    """Idempotent message store keyed by Fanvue messageUuid — used by the backfill
-    so re-running reconcile never duplicates history. Returns True if newly written.
-    `ts` is set to the message's real sent time so it interleaves correctly with
-    live webhook messages in recent_messages()."""
+                   sent_at: str = "", media_uuids=None, price_cents: int = 0,
+                   mode: str = "", session_id: str = "", via: str = "webhook",
+                   kind: str = "") -> bool:
+    """Idempotent message store keyed by Fanvue messageUuid. Used by BOTH the
+    nightly backfill AND the live webhook path (fan inbound keyed by the webhook's
+    messageUuid, Jenny's reply keyed by the uuid the send API returns) so the two
+    paths write the SAME doc id — re-running reconcile over already-live messages
+    collides and no-ops instead of creating a second, random-id copy. Returns True
+    if newly written. `ts` is the real sent time so it interleaves correctly with
+    other messages in recent_messages()."""
     if not msg_uuid:
         return False
     if _backend().sub_get(FANS, fan_id, MESSAGES, msg_uuid) is not None:
         return False
     _backend().sub_set(FANS, fan_id, MESSAGES, msg_uuid,
                        {"fan_id": fan_id, "role": role, "text": text, "messageUuid": msg_uuid,
+                        "kind": kind,
                         "mediaUuids": media_uuids or [], "priceCents": price_cents,
-                        "mode": "", "sessionId": "", "ts": sent_at or _now().isoformat(),
+                        "mode": mode, "sessionId": session_id,
+                        "ts": sent_at or _now().isoformat(),
+                        "via": via,  # "webhook" (live) | "reconcile" (backfill)
                         "source": "sim" if fan_id.startswith("sim:") else "fanvue"})
     return True
 
 
 def recent_messages(fan_id: str, limit: int = 15) -> List[dict]:
     return _backend().sub_recent(FANS, fan_id, MESSAGES, "ts", limit)
+
+
+def dedup_live_messages(fan_id: str, *, apply: bool = False) -> dict:
+    """One-time cleanup of the pre-fix double-write. Before messageUuid was
+    threaded through the live path, every live webhook message was stored under a
+    RANDOM doc id with no messageUuid, and the nightly reconcile then re-pulled the
+    same message and stored a SECOND copy keyed by messageUuid. This removes the
+    random-id copies that are now shadowed by a uuid-keyed twin (same role + text),
+    keeping the canonical uuid-keyed doc. Random-id docs with NO uuid-keyed twin
+    (e.g. a reply that never came back from a reconcile pull) are left untouched.
+
+    Dry-run by default: returns {examined, duplicates, deleted}. Pass apply=True to
+    actually delete. Set the namespace (use_namespace_for) before calling."""
+    items = _backend().sub_items(FANS, fan_id, MESSAGES)
+    # canonical keys that exist as a uuid-keyed doc
+    keyed = {(d.get("role"), (d.get("text") or "").strip())
+             for _id, d in items if d.get("messageUuid")}
+    deleted = 0
+    duplicates = 0
+    for sub_id, d in items:
+        if d.get("messageUuid"):
+            continue  # this IS the canonical copy
+        if (d.get("role"), (d.get("text") or "").strip()) in keyed:
+            duplicates += 1
+            if apply:
+                _backend().sub_delete(FANS, fan_id, MESSAGES, sub_id)
+                deleted += 1
+    return {"fan": fan_id, "examined": len(items), "duplicates": duplicates, "deleted": deleted}
 
 
 def messages_since(fan_id: str, since: str = "", limit: int = 1000) -> List[dict]:
@@ -397,6 +478,152 @@ def messages_since(fan_id: str, since: str = "", limit: int = 1000) -> List[dict
 
 def message_count(fan_id: str) -> int:
     return _backend().sub_count(FANS, fan_id, MESSAGES)
+
+
+# ---------------- per-fan debounce (batch + lock + watermark) ----------------
+# Two fields on the fan doc drive the whole mechanism (see docs/debounce):
+#   processingLease = None | {"owner", "expiresAt"}  — the lock (one worker/fan)
+#   lastProcessedAt = ISO ts                          — watermark: newest fan
+#                     message we've already replied to; anything newer is pending.
+def record_inbound(fan_id: str, msg_uuid: str, text: str) -> None:
+    """Debounce inbound: store the fan's message (idempotent by messageUuid)
+    WITHOUT running the agent — the worker replies later. We deliberately do NOT
+    touch lastSeenAt here: the worker's compute_session needs the pre-burst value
+    to detect a new session, and bumping it on every inbound would erase that gap.
+
+    First-engagement baseline: if this fan has no watermark yet (debounce just
+    turned on, or a fan who only ever ran the synchronous path), seed it to our
+    LAST REPLY's timestamp so pre-existing, already-handled history isn't treated
+    as one giant unanswered batch. Trailing fan messages newer than our last reply
+    stay pending — same rule reconcile uses. Only runs while the watermark is unset."""
+    if not (get_fan(fan_id).get("lastProcessedAt")):
+        hist = recent_messages(fan_id, limit=50)
+        last_jenny = max((m.get("ts") or "" for m in hist if m.get("role") == "jenny"),
+                         default="")
+        if last_jenny:
+            init_watermark_if_unset(fan_id, last_jenny)
+    if msg_uuid:
+        upsert_message(fan_id, msg_uuid, "fan", text, via="webhook")
+    else:
+        save_message(fan_id, "fan", text, via="webhook")
+
+
+def init_watermark_if_unset(fan_id: str, ts: str) -> None:
+    """Set lastProcessedAt to `ts` only if it's currently unset (atomic check-and-
+    set). Used to baseline a fan the first time debounce engages; never overwrites
+    a watermark the live worker is already managing."""
+    if not ts:
+        return
+
+    def fn(fan):
+        if fan is None:
+            fan = _default_fan(fan_id)
+        if fan.get("lastProcessedAt"):
+            return None, None  # already managed — leave it
+        fan["lastProcessedAt"] = ts
+        return fan, None
+
+    _backend().update_atomic(FANS, fan_id, fn)
+
+
+def unanswered_fan_messages(fan_id: str, limit: int = 1000) -> List[dict]:
+    """Fan messages newer than the watermark (role == 'fan', ts > lastProcessedAt),
+    oldest first — the batch a worker must answer. Jenny's own replies never count,
+    and neither do synthetic internal prompts (kind == 'system', e.g. the purchase
+    reaction note) — those aren't real fan utterances to respond to."""
+    wm = (get_fan(fan_id).get("lastProcessedAt")) or ""
+    return [m for m in messages_since(fan_id, wm, limit=limit)
+            if m.get("role") == "fan" and m.get("kind") != "system"]
+
+
+def acquire_lease(fan_id: str, owner: str, ttl_seconds: int) -> bool:
+    """Atomically grab the per-fan processing lease. True if acquired (nobody held
+    it, OR the previous holder's lease expired — a dead worker self-heals), False
+    if a live worker currently holds it."""
+    now = _now()
+    expires = (now + timedelta(seconds=ttl_seconds)).isoformat()
+    now_iso = now.isoformat()
+
+    def fn(fan):
+        if fan is None:
+            fan = _default_fan(fan_id)
+        lease = fan.get("processingLease")
+        if lease and lease.get("owner") != owner and (lease.get("expiresAt") or "") > now_iso:
+            return None, False  # held by a live worker
+        fan["processingLease"] = {"owner": owner, "expiresAt": expires}
+        return fan, True
+
+    return _backend().update_atomic(FANS, fan_id, fn)
+
+
+def finish_processing(fan_id: str, owner: str, through_ts: str) -> None:
+    """Advance the watermark to `through_ts` (monotonic) and release the lease, in
+    one transaction — but only clear the lease if we still own it (a lease we lost
+    to expiry is someone else's now)."""
+    def fn(fan):
+        if fan is None:
+            return None, None
+        cur = fan.get("lastProcessedAt") or ""
+        if through_ts and through_ts > cur:
+            fan["lastProcessedAt"] = through_ts
+        lease = fan.get("processingLease")
+        if lease and lease.get("owner") == owner:
+            fan["processingLease"] = None
+        return fan, None
+
+    _backend().update_atomic(FANS, fan_id, fn)
+
+
+def release_lease(fan_id: str, owner: str) -> None:
+    """Drop the lease without moving the watermark (used when a worker bails out
+    before replying — e.g. nothing to answer, or a generation error). Only clears
+    a lease we still own."""
+    def fn(fan):
+        if fan is None:
+            return None, None
+        lease = fan.get("processingLease")
+        if lease and lease.get("owner") == owner:
+            fan["processingLease"] = None
+            return fan, None
+        return None, None
+
+    _backend().update_atomic(FANS, fan_id, fn)
+
+
+def merge_fan_fields(fan_id: str, fields: dict) -> None:
+    """Atomically set specific fields on the fan doc WITHOUT overwriting the rest.
+    Needed for writes that happen after the lease is released (e.g. the rolling
+    summary): a plain save_fan would overwrite the whole doc and could clobber a
+    processingLease / lastProcessedAt that a concurrent worker just set."""
+    if not fields:
+        return
+
+    def fn(fan):
+        if fan is None:
+            fan = _default_fan(fan_id)
+        fan.update(fields)
+        return fan, None
+
+    _backend().update_atomic(FANS, fan_id, fn)
+
+
+def advance_watermark_to(fan_id: str, ts: str) -> None:
+    """Move the watermark forward to `ts` if it's newer (monotonic; never backward).
+    Used by reconcile to mark backfilled history up to our last reply as answered,
+    so a webhook-triggered worker doesn't try to re-answer the whole imported chat."""
+    if not ts:
+        return
+
+    def fn(fan):
+        if fan is None:
+            fan = _default_fan(fan_id)
+        cur = fan.get("lastProcessedAt") or ""
+        if ts > cur:
+            fan["lastProcessedAt"] = ts
+            return fan, None
+        return None, None
+
+    _backend().update_atomic(FANS, fan_id, fn)
 
 
 # ---------------- purchases ----------------
