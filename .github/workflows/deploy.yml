@@ -150,6 +150,20 @@ jobs:
           MEM=$(curl -fsS -X POST "$CAND_URL/admin/memcheck" -H "x-sim-secret: $SIM" | jq -r '.status')
           echo "memcheck status: $MEM"
           test "$MEM" = "ok" -o "$MEM" = "disabled"
+          # New-surface smoke (read-only / no-op) so a broken debounce or recall
+          # route fails the CANARY before any traffic is shifted:
+          #  - recall_eval must return a strategy for a sim fan
+          RECALL=$(curl -fsS -X POST "$CAND_URL/admin/recall_eval" -H "x-sim-secret: $SIM" \
+            -H "content-type: application/json" \
+            -d '{"fan_id":"sim:smoke","message":"hey jenny"}' | jq -r '.strategyInUse')
+          echo "recall_eval strategyInUse: $RECALL"
+          test -n "$RECALL"
+          #  - the debounce worker endpoint must respond; a sim fan with no pending
+          #    messages makes it a safe no-op ("nothing")
+          PF=$(curl -fsS -X POST "$CAND_URL/admin/process_fan" -H "x-sim-secret: $SIM" \
+            -H "content-type: application/json" -d '{"fan_id":"sim:smoke"}' | jq -r '.status')
+          echo "process_fan status: $PF"
+          test "$PF" = "nothing"
 
   # 4) Only now shift 100% of traffic to the verified revision.
   promote:
