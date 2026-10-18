@@ -47,6 +47,9 @@ def test_e2e_debounce_webhook_to_single_reply(monkeypatch):
     sent = []
     monkeypatch.setattr(fanvue_client.fanvue, "send_message",
                         lambda uuid, text, **k: sent.append(text) or {"uuid": "j-1"})
+    # force the client "ready" so the send branch runs in CI too (CI has no real
+    # token → ready would be False → the send is skipped and nothing lands in `sent`)
+    monkeypatch.setattr(fanvue_client.fanvue, "_tokens", {"access_token": "x"})
 
     for i, (uuid, text) in enumerate([("m1", "hey"), ("m2", "you around?")]):
         ev = {"messageUuid": uuid, "sender": {"uuid": "fan-e2e"},
