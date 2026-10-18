@@ -13,6 +13,7 @@ locals {
     "firestore.googleapis.com", "secretmanager.googleapis.com", "bigquery.googleapis.com",
     "cloudscheduler.googleapis.com", "iamcredentials.googleapis.com", "sts.googleapis.com",
     "eventarc.googleapis.com", "sqladmin.googleapis.com", "aiplatform.googleapis.com",
+    "cloudtasks.googleapis.com", # per-fan debounce worker queue
   ]
 
   deployer_roles = [
@@ -185,6 +186,37 @@ resource "google_service_account_iam_member" "wif_bind" {
   service_account_id = google_service_account.deployer.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "principalSet://iam.googleapis.com/projects/${data.google_project.p.number}/locations/global/workloadIdentityPools/${google_iam_workload_identity_pool.github.workload_identity_pool_id}/attribute.repository/${var.github_repo}"
+}
+
+# Per-fan debounce (DEBOUNCE_ENABLED): the webhook records a fan message then
+# enqueues a delayed POST to /admin/process_fan here. The queue waits out the
+# settle window and retries (backoff) until the worker returns 2xx. maxDispatches
+# bounds concurrency; retry window is generous so a transient LLM/Fanvue blip
+# never drops a reply. See docs/debounce + agent/tasks.py.
+resource "google_cloud_tasks_queue" "process" {
+  name     = "jenny-process"
+  location = var.region
+
+  rate_limits {
+    max_dispatches_per_second = 50
+    max_concurrent_dispatches = 20
+  }
+  retry_config {
+    max_attempts       = 8
+    min_backoff        = "5s"
+    max_backoff        = "120s"
+    max_retry_duration = "1800s" # give up after 30m of retries
+  }
+  depends_on = [google_project_service.apis]
+}
+
+# The runtime SA creates tasks on the queue (enqueue from the webhook). The worker
+# endpoint is authorized by the sim-secret header the task carries, so no
+# run.invoker binding is needed while the service allows unauthenticated.
+resource "google_project_iam_member" "runtime_tasks_enqueuer" {
+  project = var.project
+  role    = "roles/cloudtasks.enqueuer"
+  member  = "serviceAccount:${google_service_account.runtime.email}"
 }
 
 # Analytics warehouse (Firestore exports land here in Phase 2).

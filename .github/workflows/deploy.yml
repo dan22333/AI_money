@@ -97,6 +97,14 @@ jobs:
           # Fanvue: client id (GitHub secret) + token store = Secret Manager. The
           # fanvue-oauth-tokens secret value is created out-of-band (one-time OAuth).
           ENVS="${ENVS},OAUTH_CLIENT_ID=${{ secrets.FANVUE_CLIENT_ID }},FANVUE_TOKENS_SOURCE=secret"
+          # Per-fan debounce (batch rapid-fire messages → one reply). Shipped OFF:
+          # the webhook keeps replying synchronously until DEBOUNCE_ENABLED=true is
+          # flipped. The queue + the service's own URL are wired now so flipping it
+          # on needs no other change. SERVICE_BASE_URL comes from the live service
+          # (empty on the first-ever deploy — harmless while debounce is off).
+          BASE_URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format='value(status.url)' 2>/dev/null || true)
+          RUNTIME_SA="jenny-runtime@${PROJECT}.iam.gserviceaccount.com"
+          ENVS="${ENVS},DEBOUNCE_ENABLED=false,TASKS_QUEUE=jenny-process,TASKS_LOCATION=${REGION},SERVICE_BASE_URL=${BASE_URL},TASKS_INVOKER_SA=${RUNTIME_SA}"
           if gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
             NO_TRAFFIC="--no-traffic"
             echo "Service exists → candidate at 0% traffic (canary)."

@@ -112,6 +112,54 @@ def simulate(inp: SimulateIn, x_sim_secret: str | None = Header(default=None)):
     return graph.handle_message(fan_id=fan_id, user_uuid=fan_id, text=inp.text, dry_run=inp.dry_run)
 
 
+class ProcessFanIn(BaseModel):
+    fan_id: str
+    user_uuid: str = ""
+
+
+@app.post("/admin/process_fan")
+def process_fan(inp: ProcessFanIn, request: Request,
+                x_sim_secret: str | None = Header(default=None)):
+    """Cloud Tasks worker for the per-fan debounce (DEBOUNCE_ENABLED). Protected by
+    the same sim-secret as the other /admin routes (the enqueue attaches it). The
+    `X-CloudTasks-TaskRetryCount` header tells us this is a redelivery so we can do
+    the Fanvue read-back before resending. Returns 2xx only after the reply is sent
+    + recorded; any error → non-2xx so Cloud Tasks redelivers with backoff."""
+    if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    import debounce
+    retry_count = request.headers.get("x-cloudtasks-taskretrycount", "0")
+    try:
+        is_retry = int(retry_count) > 0
+    except ValueError:
+        is_retry = False
+    return debounce.process_fan(inp.fan_id, inp.user_uuid or inp.fan_id, is_retry=is_retry)
+
+
+class RecallEvalIn(BaseModel):
+    fan_id: str
+    message: str
+    turns: int = 0  # recent stored turns to include as context (0 → RECALL_CONTEXT_TURNS)
+
+
+@app.post("/admin/recall_eval")
+def recall_eval(inp: RecallEvalIn, x_sim_secret: str | None = Header(default=None)):
+    """Read-only: run all three recall strategies (latest / context / expanded) for
+    one fan + probe message against the REAL memory store, and return what each
+    retrieves (+ the expanded probes). Lets us judge recall quality before flipping
+    RECALL_STRATEGY. No writes. sim-secret protected; namespaced by the fan id."""
+    if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    import memory
+    import store
+    store.use_namespace_for(inp.fan_id)
+    n = inp.turns or settings.RECALL_CONTEXT_TURNS
+    hist = store.recent_messages(inp.fan_id, limit=n)
+    recent_turns = [{"role": m.get("role"), "text": m.get("text")} for m in hist]
+    return {"fan": inp.fan_id, "strategyInUse": settings.RECALL_STRATEGY,
+            **memory.recall_eval(inp.fan_id, inp.message, recent_turns)}
+
+
 @app.post("/admin/reconcile")
 def reconcile(x_sim_secret: str | None = Header(default=None)):
     if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:

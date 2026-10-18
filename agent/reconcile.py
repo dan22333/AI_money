@@ -188,6 +188,7 @@ def _sync_messages(creator_uuid: str) -> dict:
         wm = store.get_sync_meta(f"chat:{uuid}")
         since = wm.get("lastSentAt")
         latest = since
+        latest_jenny = ""  # newest reply WE sent — the debounce watermark floor
         for m in fanvue.list_chat_messages(uuid, since=since):
             mid = m.get("uuid")
             if not mid:
@@ -195,12 +196,24 @@ def _sync_messages(creator_uuid: str) -> dict:
             sender = (m.get("sender") or {}).get("uuid")
             role = "jenny" if (sender and sender == creator_uuid) else "fan"
             sent = m.get("sentAt", "")
-            if store.upsert_message(uuid, mid, role, m.get("text") or "", sent_at=sent):
+            if store.upsert_message(uuid, mid, role, m.get("text") or "", sent_at=sent,
+                                    via="reconcile"):
                 n += 1
             if sent and (not latest or sent > latest):
                 latest = sent
+            if role == "jenny" and sent and sent > latest_jenny:
+                latest_jenny = sent
         if latest and latest != since:
             store.set_sync_meta(f"chat:{uuid}", {"lastSentAt": latest})
+        # Debounce correctness: mark backfilled history up to our LAST REPLY as
+        # answered, so if the live worker later runs it treats only fan messages
+        # AFTER our last reply as pending — not the entire imported conversation.
+        # Monotonic, so this never un-answers anything the live path already did.
+        # Buried missed messages (older than this) stay below the watermark →
+        # never re-answered out of order; a genuinely-last missed fan message
+        # (newer than our last reply) stays pending and is swept by the next
+        # webhook. Reconcile deliberately never enqueues a reply itself.
+        store.advance_watermark_to(uuid, latest_jenny)
         extracted += _backfill_memory(uuid)
     return {"messagesSynced": n, "memoriesBackfilled": extracted}
 

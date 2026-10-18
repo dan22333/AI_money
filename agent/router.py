@@ -9,6 +9,8 @@ from typing import Optional
 
 import graph
 import store
+import tasks
+from config import settings
 
 
 def already_processed(event_id: Optional[str]) -> bool:
@@ -64,6 +66,24 @@ def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: b
             print("[webhook] IGNORED message: could not find sender uuid and/or text "
                   "— real payload shape differs from the parse above")
             return {"status": "ignored", "reason": "missing sender/text"}
+        # Debounce path (DEBOUNCE_ENABLED): record the message + enqueue a delayed
+        # worker instead of replying inline, so rapid-fire messages collapse into
+        # one reply (see docs/debounce). Falls back to synchronous reply if the
+        # queue isn't wired up (local/dev) or the enqueue fails — never drops the
+        # message. dry_run (sim/canary) always stays on the synchronous path.
+        if not dry_run and tasks.enabled():
+            store.use_namespace_for(fan)
+            store.record_inbound(fan, fan_msg_uuid, text)
+            if tasks.enqueue_process_fan(fan, fan, settings.DEBOUNCE_SETTLE_SECONDS):
+                print(f"[webhook] queued fan={fan!r} settle={settings.DEBOUNCE_SETTLE_SECONDS}s")
+                return {"status": "queued", "fan": fan}
+            # Enqueue failed (Cloud Tasks blip): answer inline instead, then advance
+            # the watermark past this message so a later task can't re-answer it.
+            print("[webhook] enqueue failed → synchronous fallback")
+            out = graph.handle_message(fan_id=fan, user_uuid=fan, text=text,
+                                       fan_msg_uuid=fan_msg_uuid, dry_run=dry_run)
+            store.advance_watermark_to(fan, store._now().isoformat())
+            return {"status": "replied", **out}
         out = graph.handle_message(fan_id=fan, user_uuid=fan, text=text,
                                    fan_msg_uuid=fan_msg_uuid, dry_run=dry_run)
         print(f"[webhook] replied mode={out.get('mode')} reply_len={len(out.get('reply') or '')} "
@@ -84,7 +104,10 @@ def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: b
                                media_uuids=media, message_uuid=msg_uuid)
             if proactive_on_purchase:
                 note = f"[fan just unlocked your paid content ({source}, ${gross/100:.2f}) — react warmly]"
-                out = graph.handle_message(fan_id=fan, user_uuid=fan, text=note, dry_run=dry_run)
+                # system_note=True → stored kind="system" so the debounce worker
+                # never mistakes this internal directive for a fan message to answer.
+                out = graph.handle_message(fan_id=fan, user_uuid=fan, text=note,
+                                           dry_run=dry_run, system_note=True)
                 return {"status": "purchase+reacted", "invoice": invoice, **out}
         return {"status": "purchase_recorded", "invoice": invoice}
 
