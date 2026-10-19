@@ -140,6 +140,7 @@ jobs:
             --platform managed --allow-unauthenticated \
             --service-account "jenny-runtime@${PROJECT}.iam.gserviceaccount.com" \
             --add-cloudsql-instances "$PG_INSTANCE" \
+            --memory 1Gi --cpu 1 \
             --set-secrets "$SECRETS" \
             --set-env-vars "$ENVS" \
             $NO_TRAFFIC --tag candidate
