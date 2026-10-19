@@ -175,6 +175,20 @@ jobs:
             -H "content-type: application/json" -d '{"fan_id":"sim:smoke"}' | jq -r '.status')
           echo "process_fan status: $PF"
           test "$PF" = "nothing"
+          #  - the extraction fan-out worker must respond; a sim fan + trivial turn is
+          #    a safe learn into the STAGING memory collection
+          EX=$(curl -fsS -X POST "$CAND_URL/admin/extract_memory" -H "x-sim-secret: $SIM" \
+            -H "content-type: application/json" \
+            -d '{"fan_id":"sim:smoke","incoming":"hi","final":"hey"}' | jq -r '.status')
+          echo "extract_memory status: $EX"
+          test "$EX" = "learned"
+          #  - the proactive token refresher must respond with NO per-creator errors
+          #    (errors>0 = the refresh endpoint / token store wiring is broken). It
+          #    only rotates a token that's near expiry, so this is normally a no-op.
+          RT=$(curl -fsS -X POST "$CAND_URL/admin/refresh_tokens" -H "x-sim-secret: $SIM")
+          echo "refresh_tokens: $RT"
+          test "$(echo "$RT" | jq -r '.status')" = "ok"
+          test "$(echo "$RT" | jq -r '.errors')" = "0"
 
   # 4) Only now shift 100% of traffic to the verified revision.
   promote:

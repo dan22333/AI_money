@@ -106,3 +106,40 @@ def test_e2e_expanded_recall_feeds_facts_into_prompt(monkeypatch):
     # the recalled fact reached the model via the dynamic-context system message
     prompt_text = " ".join(getattr(m, "content", "") for m in chat.seen_prompts[0])
     assert "works night shifts" in prompt_text
+
+
+def test_e2e_fanout_runs_learning_off_the_reply_path(monkeypatch):
+    """MEMORY_FANOUT_ENABLED through the REAL reply path: a reply ENQUEUES the mem0
+    learning onto the extract queue instead of running it inline, so extraction never
+    blocks the reply. Asserts the turn is enqueued and learn_from_turn is NOT called."""
+    _force_mode(monkeypatch)
+    enq = []
+    monkeypatch.setattr(tasks, "enqueue_extract_memory",
+                        lambda fan, incoming, final: enq.append((fan, incoming, final)) or True)
+    inline = []
+    monkeypatch.setattr(graph, "learn_from_turn", lambda *a, **k: inline.append(a))
+    monkeypatch.setattr(fanvue_client.fanvue, "send_message", lambda *a, **k: {"uuid": "j"})
+
+    llm.set_voice_model(FakeChat([ai(text="tennis? i love watching you sweat 😏")]))
+    out = graph.handle_message("sim:fanout-e2e", "sim:fanout-e2e", "do you like tennis?", dry_run=True)
+    llm.set_voice_model(None)
+
+    assert out["reply"].startswith("tennis")
+    assert enq and enq[0][0] == "sim:fanout-e2e" and enq[0][1] == "do you like tennis?"  # enqueued
+    assert inline == []                                           # NOT run inline on the reply path
+
+
+def test_e2e_fanout_off_learns_inline(monkeypatch):
+    """With fan-out OFF the same reply path learns INLINE (enqueue declines) — the
+    flag cleanly selects the path, no queue needed."""
+    _force_mode(monkeypatch)
+    monkeypatch.setattr(tasks, "enqueue_extract_memory", lambda *a, **k: False)  # not wired
+    inline = []
+    monkeypatch.setattr(graph, "learn_from_turn", lambda *a, **k: inline.append(a))
+    monkeypatch.setattr(fanvue_client.fanvue, "send_message", lambda *a, **k: {"uuid": "j"})
+
+    llm.set_voice_model(FakeChat([ai(text="hi 💕")]))
+    graph.handle_message("sim:fanout-off", "sim:fanout-off", "hey", dry_run=True)
+    llm.set_voice_model(None)
+
+    assert len(inline) == 1                                       # learned inline, once
