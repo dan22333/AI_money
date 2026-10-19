@@ -97,17 +97,20 @@ jobs:
           # Fanvue: client id (GitHub secret) + token store = Secret Manager. The
           # fanvue-oauth-tokens secret value is created out-of-band (one-time OAuth).
           ENVS="${ENVS},OAUTH_CLIENT_ID=${{ secrets.FANVUE_CLIENT_ID }},FANVUE_TOKENS_SOURCE=secret"
-          # Per-fan debounce (batch rapid-fire messages → one reply). Shipped OFF:
-          # the webhook keeps replying synchronously until DEBOUNCE_ENABLED=true is
-          # flipped. The queue + the service's own URL are wired now so flipping it
-          # on needs no other change. SERVICE_BASE_URL comes from the live service
-          # (empty on the first-ever deploy — harmless while debounce is off).
+          # Per-fan debounce (batch rapid-fire messages → one reply). LIVE (2026-10-19).
+          # SERVICE_BASE_URL comes from the live service (empty on the first-ever deploy,
+          # harmless). We do NOT attach an OIDC token to the Cloud Tasks job
+          # (TASKS_INVOKER_SA unset): the service allows unauthenticated and the task
+          # already carries x-sim-secret, so the enqueue needs no serviceAccounts.actAs
+          # grant. (Attaching OIDC required that grant and 403'd the enqueue → inline
+          # fallback → one reply per message. Re-add TASKS_INVOKER_SA only together with
+          # that IAM binding if you later require auth on the service.)
           BASE_URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format='value(status.url)' 2>/dev/null || true)
-          RUNTIME_SA="jenny-runtime@${PROJECT}.iam.gserviceaccount.com"
-          ENVS="${ENVS},DEBOUNCE_ENABLED=false,TASKS_QUEUE=jenny-process,TASKS_LOCATION=${REGION},SERVICE_BASE_URL=${BASE_URL},TASKS_INVOKER_SA=${RUNTIME_SA}"
-          # Memory scaling (all shipped OFF — flip after the DB tier bump / queue apply):
-          # HNSW index + pgvector pool sizing, and extraction fan-out onto jenny-extract.
-          ENVS="${ENVS},MEMORY_USE_HNSW=false,MEMORY_PG_MINCONN=1,MEMORY_PG_MAXCONN=5,MEMORY_FANOUT_ENABLED=false,EXTRACT_TASKS_QUEUE=jenny-extract"
+          ENVS="${ENVS},DEBOUNCE_ENABLED=true,TASKS_QUEUE=jenny-process,TASKS_LOCATION=${REGION},SERVICE_BASE_URL=${BASE_URL}"
+          # Memory scaling — LIVE (2026-10-19, after the db-g1-small tier bump + queue apply):
+          # HNSW index + pgvector pool sizing, extraction fan-out onto jenny-extract, and
+          # expanded recall (multi-probe memory lookup) when composing replies.
+          ENVS="${ENVS},MEMORY_USE_HNSW=true,MEMORY_PG_MINCONN=1,MEMORY_PG_MAXCONN=5,MEMORY_FANOUT_ENABLED=true,EXTRACT_TASKS_QUEUE=jenny-extract,RECALL_STRATEGY=expanded"
           if gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
             NO_TRAFFIC="--no-traffic"
             echo "Service exists → candidate at 0% traffic (canary)."
