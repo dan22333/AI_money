@@ -100,7 +100,7 @@ resource "google_project_iam_member" "runtime_vertex" {
 # Smallest tier; the memory workload is tiny (a few vectors per fan).
 resource "google_sql_database_instance" "jenny_pg" {
   name             = "jenny-pg"
-  database_version = "POSTGRES_15"
+  database_version = "POSTGRES_16"
   region           = var.region
   settings {
     # Tier sized to hold the HNSW index in RAM and give the connection pool
