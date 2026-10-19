@@ -11,6 +11,7 @@ from config import settings
 def _fresh_client():
     """A FanvueClient without running __init__'s auto-load (we drive loads explicitly)."""
     c = fanvue_client.FanvueClient.__new__(fanvue_client.FanvueClient)
+    c._creator_id = "test"
     c._tokens = {}
     c._access_expiry = 0.0
     return c
@@ -203,3 +204,79 @@ def test_retries_once_on_400_after_reloading_rotated_token(monkeypatch):
     assert c._access_token() == "a2"
     assert requested == ["r_stale", "r_new"]       # retried with the reloaded token
     assert saved and saved[0]["refresh_token"] == "r2"
+
+
+# ---- Firestore token backend + proactive refresher (Phase 2) ----
+FAR_FUTURE = 9_999_999_999  # absolute epoch far beyond now → token looks fresh
+
+
+def test_firestore_source_seeds_from_secret_then_persists(monkeypatch):
+    """First load with source=firestore and an empty doc seeds from the old Secret
+    Manager token (automatic cutover), then persists it to the Firestore doc."""
+    import store
+    monkeypatch.setattr(settings, "FANVUE_TOKENS_SOURCE", "firestore")
+    _install_fake_secretmanager(monkeypatch, stored={
+        "refresh_token": "r0", "access_token": "a0", "access_expires_at": FAR_FUTURE})
+    c = fanvue_client.FanvueClient("seed1")
+    assert c._tokens["refresh_token"] == "r0"           # seeded from the secret
+    with store.namespace("real"):
+        doc = store.get_fanvue_token("seed1")
+    assert doc and doc["refresh_token"] == "r0" and doc["creatorId"] == "seed1"  # persisted
+
+
+def test_firestore_source_roundtrips_without_version_churn(monkeypatch):
+    import store
+    monkeypatch.setattr(settings, "FANVUE_TOKENS_SOURCE", "firestore")
+    c = _fresh_client()
+    c._creator_id = "rt1"
+    c._tokens = {"refresh_token": "rA", "access_token": "aA"}
+    c._save_tokens()                                     # overwrite in place
+    c._tokens["refresh_token"] = "rB"
+    c._save_tokens()                                     # same doc, no new version
+    with store.namespace("real"):
+        doc = store.get_fanvue_token("rt1")
+    assert doc["refresh_token"] == "rB"                  # latest wins, one doc
+
+
+def test_ensure_fresh_skips_a_still_fresh_token(monkeypatch):
+    import store
+    monkeypatch.setattr(settings, "FANVUE_TOKENS_SOURCE", "firestore")
+    with store.namespace("real"):
+        store.set_fanvue_token("fr1", {"refresh_token": "r", "access_token": "a",
+                                       "access_expires_at": FAR_FUTURE, "creatorId": "fr1"})
+    c = fanvue_client.FanvueClient("fr1")
+    monkeypatch.setattr(c, "_refresh", lambda: (_ for _ in ()).throw(AssertionError("must not refresh")))
+    assert c.ensure_fresh(1800) == "fresh"
+
+
+def test_ensure_fresh_refreshes_a_near_expiry_token(monkeypatch):
+    import store
+    monkeypatch.setattr(settings, "FANVUE_TOKENS_SOURCE", "firestore")
+    with store.namespace("real"):
+        store.set_fanvue_token("fr2", {"refresh_token": "r", "access_token": "a",
+                                       "access_expires_at": 1, "creatorId": "fr2"})  # expired
+    c = fanvue_client.FanvueClient("fr2")
+    calls = {"n": 0}
+    monkeypatch.setattr(c, "_refresh", lambda: calls.__setitem__("n", calls["n"] + 1))
+    assert c.ensure_fresh(1800) == "refreshed"
+    assert calls["n"] == 1
+
+
+def test_ensure_fresh_unconfigured_when_no_refresh_token(monkeypatch):
+    monkeypatch.setattr(settings, "FANVUE_TOKENS_SOURCE", "firestore")
+    _install_fake_secretmanager(monkeypatch, stored=None)  # empty doc + empty secret → nothing to seed
+    c = fanvue_client.FanvueClient("nope-creator-xyz")   # no doc, no secret
+    assert c.ensure_fresh(1800) == "unconfigured"
+
+
+def test_refresh_all_enumerates_creators_and_reports(monkeypatch):
+    import store
+    monkeypatch.setattr(settings, "FANVUE_TOKENS_SOURCE", "firestore")
+    monkeypatch.setattr(settings, "FANVUE_CREATOR_ID", "default")
+    with store.namespace("real"):
+        store.set_fanvue_token("default", {"refresh_token": "r", "creatorId": "default"})
+        store.set_fanvue_token("creatorB", {"refresh_token": "r", "creatorId": "creatorB"})
+    monkeypatch.setattr(fanvue_client.FanvueClient, "ensure_fresh", lambda self, skew: "fresh")
+    out = fanvue_client.refresh_all(1800)
+    assert out["fresh"] == 2                              # both creators handled
+    assert set(out["creators"]) >= {"default", "creatorB"}

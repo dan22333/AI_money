@@ -28,26 +28,55 @@ from config import settings
 
 
 class FanvueClient:
-    def __init__(self):
+    def __init__(self, creator_id: Optional[str] = None):
+        self._creator_id = creator_id or settings.FANVUE_CREATOR_ID
         self._tokens: dict = {}
         self._access_expiry: float = 0.0
         self._load_tokens()
 
-    # ---- token persistence (file for dev, Secret Manager on GCP) ----
+    # ---- token persistence: file (dev) | secret (Secret Manager) | firestore ----
+    def _source(self) -> str:
+        return settings.FANVUE_TOKENS_SOURCE
+
     def _use_secret(self) -> bool:
-        return settings.FANVUE_TOKENS_SOURCE == "secret"
+        return self._source() == "secret"
+
+    def _is_distributed(self) -> bool:
+        """Backends shared by many Cloud Run instances → a refresh must be
+        serialized by the cross-instance lock. File (single process) need not."""
+        return self._source() in ("secret", "firestore")
 
     def _secret_name(self) -> str:
         return f"projects/{settings.GCP_PROJECT}/secrets/{settings.FANVUE_TOKENS_SECRET}"
 
+    def _read_secret(self) -> dict:
+        """Latest Secret Manager version as a dict ({} if missing/empty/unreadable)."""
+        try:
+            from google.cloud import secretmanager
+            client = secretmanager.SecretManagerServiceClient()
+            resp = client.access_secret_version(name=f"{self._secret_name()}/versions/latest")
+            payload = resp.payload.data.decode().strip()
+            return json.loads(payload) if payload else {}
+        except Exception:
+            return {}
+
     def _load_tokens(self):
         try:
-            if self._use_secret():
-                from google.cloud import secretmanager
-                client = secretmanager.SecretManagerServiceClient()
-                resp = client.access_secret_version(name=f"{self._secret_name()}/versions/latest")
-                payload = resp.payload.data.decode().strip()
-                self._tokens = json.loads(payload) if payload else {}
+            src = self._source()
+            if src == "firestore":
+                import store
+                with store.namespace("real"):
+                    doc = store.get_fanvue_token(self._creator_id)
+                    if not doc:
+                        # one-time migration: seed the doc from the old Secret
+                        # Manager token so flipping the source needs no manual copy.
+                        doc = self._read_secret()
+                        if doc:
+                            doc = {**doc, "creatorId": self._creator_id}
+                            store.set_fanvue_token(self._creator_id, doc)
+                self._tokens = doc or {}
+            elif src == "secret":
+                self._tokens = self._read_secret()
             else:
                 with open(settings.FANVUE_TOKENS_FILE) as f:
                     self._tokens = json.load(f)
@@ -61,7 +90,13 @@ class FanvueClient:
         self._access_expiry = float(self._tokens.get("access_expires_at") or 0.0)
 
     def _save_tokens(self):
-        if self._use_secret():
+        src = self._source()
+        if src == "firestore":
+            import store
+            self._tokens["creatorId"] = self._creator_id
+            with store.namespace("real"):
+                store.set_fanvue_token(self._creator_id, self._tokens)
+        elif src == "secret":
             from google.cloud import secretmanager
             client = secretmanager.SecretManagerServiceClient()
             client.add_secret_version(
@@ -77,7 +112,11 @@ class FanvueClient:
         return bool(self._tokens.get("refresh_token") or self._tokens.get("access_token"))
 
     # ---- access token lifecycle ----
-    TOKEN_REFRESH_LOCK = "fanvue_token_refresh"
+    @property
+    def _refresh_lock_name(self) -> str:
+        # Per-creator: refreshing creator A's token must not block creator B's, but
+        # two refreshes of the SAME creator can never race (single-use token).
+        return f"fanvue_token_refresh:{self._creator_id}"
 
     def _token_request(self, refresh_token: str) -> dict:
         """POST the refresh grant to Fanvue and return the new token JSON. Raises
@@ -105,14 +144,14 @@ class FanvueClient:
     def _refresh(self):
         """Trade the refresh token for a new access token.
 
-        File backend (local dev) = a single process, so just do it. Secret backend
-        (GCP, many Cloud Run instances) = refresh under a cross-instance lock,
-        because Fanvue refresh tokens are single-use + rotating: two instances
-        refreshing at once would invalidate each other's token and lock out the
-        whole fleet. Inside the lock we RE-READ the latest persisted token first —
-        if a sibling already refreshed, we reuse its still-valid access token
-        instead of rotating again."""
-        if not self._use_secret():
+        File backend (local dev) = a single process, so just do it. Distributed
+        backends (secret / firestore on GCP, many Cloud Run instances) = refresh
+        under a cross-instance lock, because Fanvue refresh tokens are single-use +
+        rotating: two instances refreshing at once would invalidate each other's
+        token and lock out the whole fleet. Inside the lock we RE-READ the latest
+        persisted token first — if a sibling already refreshed, we reuse its
+        still-valid access token instead of rotating again."""
+        if not self._is_distributed():
             refresh_token = self._tokens.get("refresh_token")
             if not refresh_token:
                 raise RuntimeError("No refresh token — run fanvue_auth.py first.")
@@ -129,7 +168,7 @@ class FanvueClient:
             acquired = False
             for _ in range(settings.FANVUE_REFRESH_LOCK_TRIES):
                 acquired = store.acquire_lock(
-                    self.TOKEN_REFRESH_LOCK, owner, settings.FANVUE_REFRESH_LOCK_TTL)
+                    self._refresh_lock_name, owner, settings.FANVUE_REFRESH_LOCK_TTL)
                 if acquired:
                     break
                 # Another instance is refreshing. Wait, then re-read what it persists;
@@ -170,12 +209,27 @@ class FanvueClient:
                         raise
                 self._apply_and_save(tok)
             finally:
-                store.release_lock(self.TOKEN_REFRESH_LOCK, owner)
+                store.release_lock(self._refresh_lock_name, owner)
 
     def _access_token(self) -> str:
         if not self._tokens.get("access_token") or time.time() >= self._access_expiry:
             self._refresh()
         return self._tokens["access_token"]
+
+    def ensure_fresh(self, skew_seconds: float) -> str:
+        """Proactive refresh: rotate the token now if it's missing or within
+        `skew_seconds` of expiry, otherwise leave it. Returns a status string
+        ('refreshed' | 'fresh' | 'unconfigured'). Driven by the Cloud Scheduler
+        cron (POST /admin/refresh_tokens) so the token never expires during quiet
+        periods and no user-facing request pays the refresh latency. Idempotent
+        and lock-guarded — safe to call on every cron tick and from many instances."""
+        self._load_tokens()
+        if not self._tokens.get("refresh_token"):
+            return "unconfigured"
+        if self._tokens.get("access_token") and time.time() < self._access_expiry - skew_seconds:
+            return "fresh"
+        self._refresh()
+        return "refreshed"
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._access_token()}",
@@ -284,5 +338,35 @@ class FanvueClient:
         return r.json()
 
 
-# single shared instance
+# single shared instance (the configured creator)
 fanvue = FanvueClient()
+
+
+def refresh_all(skew_seconds: Optional[float] = None) -> dict:
+    """Proactively refresh every creator's token that's within `skew_seconds` of
+    expiry. Driven by the Cloud Scheduler cron via POST /admin/refresh_tokens.
+
+    Enumerates creators from the Firestore token collection (multi-creator ready);
+    for the file/secret backends there's just the one configured creator. Reuses
+    the global client for the configured creator so a warm token isn't re-read.
+    Never raises on a single creator's failure — reports it per-creator."""
+    skew = settings.FANVUE_REFRESH_SKEW_SECONDS if skew_seconds is None else skew_seconds
+    creator_ids: List[str] = []
+    if settings.FANVUE_TOKENS_SOURCE == "firestore":
+        import store
+        with store.namespace("real"):
+            creator_ids = store.list_fanvue_token_creator_ids()
+    if settings.FANVUE_CREATOR_ID not in creator_ids:
+        creator_ids.append(settings.FANVUE_CREATOR_ID)
+
+    results: dict = {"refreshed": 0, "fresh": 0, "unconfigured": 0, "errors": 0, "creators": {}}
+    for cid in creator_ids:
+        client = fanvue if cid == fanvue._creator_id else FanvueClient(cid)
+        try:
+            status = client.ensure_fresh(skew)
+        except Exception as e:  # one creator's failure must not stop the rest
+            status = "error"
+            print(f"[refresh_all] creator={cid} failed ({type(e).__name__}: {e})")
+        results["creators"][cid] = status
+        results[status if status in ("refreshed", "fresh", "unconfigured") else "errors"] += 1
+    return results

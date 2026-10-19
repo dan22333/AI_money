@@ -115,8 +115,20 @@ class Settings:
     # The refresh token rotates on every use, so on GCP we read/write it as new
     # versions of the FANVUE_TOKENS_SECRET secret. The secret VALUE is created
     # out-of-band by the one-time OAuth browser flow (scripts/fanvue_auth.py).
+    # "file" (local dev) | "secret" (Secret Manager) | "firestore" (a single
+    # overwrite-in-place doc per creator — no version churn, multi-creator-ready;
+    # recommended on GCP). On first "firestore" load the doc is seeded from the
+    # Secret Manager secret so cutover is automatic.
     FANVUE_TOKENS_SOURCE = os.environ.get("FANVUE_TOKENS_SOURCE", "file")
     FANVUE_TOKENS_SECRET = os.environ.get("FANVUE_TOKENS_SECRET", "fanvue-oauth-tokens")
+    # Logical creator the global client authorizes as (the token doc key). One
+    # creator today; multi-creator later keys tokens by real creator uuids.
+    FANVUE_CREATOR_ID = os.environ.get("FANVUE_CREATOR_ID", "default")
+    # Proactive refresher (POST /admin/refresh_tokens, driven by Cloud Scheduler):
+    # refresh a token when it's within this many seconds of expiry. 30 min sits
+    # under the ~60-min access-token life so each ~30-min cron keeps it valid AND
+    # keeps the single-use refresh token from idling out during quiet periods.
+    FANVUE_REFRESH_SKEW_SECONDS = float(os.environ.get("FANVUE_REFRESH_SKEW_SECONDS", "1800"))
     # Fanvue refresh tokens are SINGLE-USE + rotating, but Cloud Run runs many
     # instances. Without coordination, two instances refresh the same token at
     # once → the first rotates it, invalidating the token the others (and the

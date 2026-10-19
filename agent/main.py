@@ -198,6 +198,18 @@ def recall_eval(inp: RecallEvalIn, x_sim_secret: str | None = Header(default=Non
             **memory.recall_eval(inp.fan_id, inp.message, recent_turns)}
 
 
+@app.post("/admin/refresh_tokens")
+def refresh_tokens(x_sim_secret: str | None = Header(default=None)):
+    """Proactively refresh Fanvue OAuth tokens that are near expiry. Driven by the
+    Cloud Scheduler cron (the 'single writer') so tokens never idle out or expire
+    mid-conversation; on-demand refresh stays as a fallback. Lock-guarded + idempotent
+    — safe on every tick. sim-secret protected."""
+    if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    import fanvue_client
+    return {"status": "ok", **fanvue_client.refresh_all()}
+
+
 @app.post("/admin/reconcile")
 def reconcile(x_sim_secret: str | None = Header(default=None)):
     if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
