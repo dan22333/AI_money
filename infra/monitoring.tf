@@ -43,6 +43,20 @@ resource "google_logging_metric" "send_failures" {
   }
 }
 
+resource "google_logging_metric" "reconcile_failures" {
+  name        = "jenny_reconcile_failures"
+  description = "Backfill/reconcile failures — a partial run or a skipped run (Fanvue not connected)"
+  filter      = <<-EOT
+    resource.type="cloud_run_revision"
+    resource.labels.service_name="jenny-agent"
+    (textPayload:"[reconcile] partial" OR textPayload:"[reconcile] skipped")
+  EOT
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+  }
+}
+
 resource "google_logging_metric" "llm_errors" {
   name        = "jenny_llm_errors"
   description = "Count of OpenRouter LLM call failures (429 rate-limit / 5xx / timeout)"
@@ -115,6 +129,29 @@ resource "google_monitoring_alert_policy" "send_failures" {
       duration        = "0s"
       aggregations {
         alignment_period   = "600s"
+        per_series_aligner = "ALIGN_SUM"
+      }
+    }
+  }
+  notification_channels = local.alert_channels
+}
+
+# Nightly backfill (reconcile) failed or was skipped. Runs ~daily, so any failure
+# in the window means the nightly repair didn't happen — alert on the first one.
+# (Hard 5xx/timeout failures are additionally covered by the 5xx alert + Scheduler
+# retries; this catches the resilient partial/skipped runs that still return 200.)
+resource "google_monitoring_alert_policy" "reconcile_failures" {
+  display_name = "Nightly backfill (reconcile) failed/skipped"
+  combiner     = "OR"
+  conditions {
+    display_name = "reconcile partial/skipped > 0"
+    condition_threshold {
+      filter          = "resource.type=\"cloud_run_revision\" AND metric.type=\"logging.googleapis.com/user/${google_logging_metric.reconcile_failures.name}\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+      aggregations {
+        alignment_period   = "3600s"
         per_series_aligner = "ALIGN_SUM"
       }
     }

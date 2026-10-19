@@ -268,6 +268,9 @@ def run(since: str | None = None, dry_run: bool = False) -> dict:
     connectivity before a real run. `*Synced` counts in preview are the items pulled
     and considered, not precise insert-vs-update deltas."""
     if not fanvue.ready:
+        # Backfill can't run — Fanvue not connected (token dead/unconfigured). This
+        # is a real failure for a scheduled run; log a marker the alert watches.
+        print("[reconcile] skipped — fanvue not connected (token missing/dead)")
         return {"status": "skipped", "reason": "fanvue not connected"}
     creator = _creator_uuid()
     result: dict = {"status": "ok", "dryRun": dry_run}
@@ -283,4 +286,7 @@ def run(since: str | None = None, dry_run: bool = False) -> dict:
     if errors:
         result["status"] = "partial"
         result["errors"] = errors
+        # resilient run returns HTTP 200 even on partial failure, so the only way an
+        # alert can see it is this log marker (metric jenny_reconcile_failures).
+        print(f"[reconcile] partial — failed syncs: {errors}")
     return result
