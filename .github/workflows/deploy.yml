@@ -1,7 +1,8 @@
 name: Deploy
 
 # Deploys ONLY after CI succeeds on main. Never on a red build, never on branches.
-# Chained jobs (build → migrate → deploy-candidate → smoke → promote) so the Actions "graph" view
+# Chained jobs (build → migrate-staging → deploy-candidate → smoke → migrate-prod → promote)
+# so the Actions "graph" view
 # renders the pipeline as a DAG and each stage is its own pass/fail node.
 on:
   workflow_run:
@@ -42,12 +43,13 @@ jobs:
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
 
-  # 1b) Migrate the pgvector DBs (alembic upgrade head) via the Cloud SQL Auth
-  #     Proxy, BEFORE the candidate serves — so the `vector` extension (and any
-  #     tables we own) exist. mem0 still manages its own table. Runs on the STAGING
-  #     database (jenny_staging) FIRST as a rehearsal — a broken migration fails
-  #     there and halts the deploy before prod (jenny) is touched — then on prod.
-  migrate:
+  # 1b) Migrate ONLY the STAGING database here (alembic upgrade head on
+  #     jenny_staging) via the Cloud SQL Auth Proxy — BEFORE the candidate serves,
+  #     so the `vector` extension + any tables we own exist for the sim namespace.
+  #     PROD (jenny) is deliberately NOT migrated yet — it waits until the staging-
+  #     backed candidate passes smoke (see the migrate-prod job after smoke). So a
+  #     migration that breaks, or that breaks the app, never touches prod's schema.
+  migrate-staging:
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -60,7 +62,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: alembic upgrade head
+      - name: alembic upgrade head (staging)
         working-directory: agent
         run: |
           PG_INSTANCE="${PROJECT}:${REGION}:jenny-pg"
@@ -70,14 +72,10 @@ jobs:
           PROXY_PID=$!
           for i in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null && { echo "proxy up"; break; }; sleep 1; done
           uv sync --frozen
-          export PG_HOST=127.0.0.1 PG_USER=postgres
+          export PG_HOST=127.0.0.1 PG_USER=postgres PG_DB=jenny_staging
           export PG_PASSWORD="$(gcloud secrets versions access latest --secret=jenny-pg-password --project "$PROJECT")"
-          # Rehearse on the staging DB FIRST (its own schema) — a broken migration
-          # fails here and halts the deploy before prod `jenny` is touched — then prod.
-          for DB in jenny_staging jenny; do
-            echo "== alembic upgrade head on $DB =="
-            PG_DB=$DB uv run alembic upgrade head
-          done
+          echo "== alembic upgrade head on jenny_staging =="
+          uv run alembic upgrade head
           kill $PROXY_PID 2>/dev/null || true
 
   # 2) Deploy the new revision with 0% traffic + a `candidate` preview tag.
@@ -86,7 +84,7 @@ jobs:
   #    A real canary (shift a small % of live traffic + watch metrics) would be a
   #    new stage inserted between `smoke` and `promote`.
   deploy-candidate:
-    needs: migrate
+    needs: migrate-staging
     runs-on: ubuntu-latest
     steps:
       - uses: google-github-actions/auth@v2
@@ -198,9 +196,43 @@ jobs:
           test "$(echo "$RT" | jq -r '.status')" = "ok"
           test "$(echo "$RT" | jq -r '.errors')" = "0"
 
+  # 3b) Migrate PROD (jenny) — ONLY after the staging-backed candidate passed smoke.
+  #     So prod's schema changes only once the exact migration + new code have been
+  #     proven on the staging DB end-to-end. Migrations must stay backward-compatible
+  #     (expand/contract): prod schema changes here while the OLD revision is still
+  #     serving 100%, and the new code isn't promoted until the next job.
+  migrate-prod:
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: alembic upgrade head (prod)
+        working-directory: agent
+        run: |
+          PG_INSTANCE="${PROJECT}:${REGION}:jenny-pg"
+          curl -sSLo cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.1/cloud-sql-proxy.linux.amd64
+          chmod +x cloud-sql-proxy
+          ./cloud-sql-proxy --port 5432 "$PG_INSTANCE" &
+          PROXY_PID=$!
+          for i in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null && { echo "proxy up"; break; }; sleep 1; done
+          uv sync --frozen
+          export PG_HOST=127.0.0.1 PG_USER=postgres PG_DB=jenny
+          export PG_PASSWORD="$(gcloud secrets versions access latest --secret=jenny-pg-password --project "$PROJECT")"
+          echo "== alembic upgrade head on jenny (prod) =="
+          uv run alembic upgrade head
+          kill $PROXY_PID 2>/dev/null || true
+
   # 4) Only now shift 100% of traffic to the verified revision.
   promote:
-    needs: smoke
+    needs: migrate-prod
     runs-on: ubuntu-latest
     steps:
       - uses: google-github-actions/auth@v2
