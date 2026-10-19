@@ -261,6 +261,16 @@ def _heat_from_media(m: dict) -> int:
     return 2
 
 
+def _price_for(heat: int) -> int:
+    """Price (cents) by heat: EXPLICIT(4) and FLIRTY(3) are the paid tiers; WARM(2)
+    is free (the teaser). All env-tunable (PRICE_*_CENTS). heat 4 = top price."""
+    if heat >= 4:
+        return settings.PRICE_EXPLICIT_CENTS
+    if heat == 3:
+        return settings.PRICE_FLIRTY_CENTS
+    return settings.PRICE_WARM_CENTS
+
+
 def _sync_media(dry_run: bool = False) -> dict:
     """Backfill the creator's media library into the catalog (teasers/selling).
     Heat is derived per item from Fanvue's NSFW tags so explicit content is gated to
@@ -272,10 +282,11 @@ def _sync_media(dry_run: bool = False) -> dict:
         if not uuid:
             continue
         desc = m.get("description") or m.get("caption") or m.get("name") or ""
+        heat = _heat_from_media(m)
         if not dry_run:
             store.add_catalog_item(uuid, desc, tags=m.get("tags") or [],
-                                   heat=_heat_from_media(m),
-                                   suggested_price_cents=int(m.get("recommendedPrice") or 0),
+                                   heat=heat,
+                                   suggested_price_cents=_price_for(heat),
                                    meta_source="fanvue",
                                    status="ready" if m.get("status") in (None, "ready", "processed", "completed")
                                    else str(m.get("status")))
