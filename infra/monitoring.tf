@@ -43,6 +43,20 @@ resource "google_logging_metric" "send_failures" {
   }
 }
 
+resource "google_logging_metric" "llm_errors" {
+  name        = "jenny_llm_errors"
+  description = "Count of OpenRouter LLM call failures (429 rate-limit / 5xx / timeout)"
+  filter      = <<-EOT
+    resource.type="cloud_run_revision"
+    resource.labels.service_name="jenny-agent"
+    textPayload:"[llm] openrouter error"
+  EOT
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+  }
+}
+
 # ---- alert policies ----
 locals {
   alert_channels = [google_monitoring_notification_channel.email.id]
@@ -101,6 +115,27 @@ resource "google_monitoring_alert_policy" "send_failures" {
       duration        = "0s"
       aggregations {
         alignment_period   = "600s"
+        per_series_aligner = "ALIGN_SUM"
+      }
+    }
+  }
+  notification_channels = local.alert_channels
+}
+
+# OpenRouter trouble on our LLM calls (rate-limit / outage / timeouts). Occasional
+# errors are normal (the queue retries), so alert only on a SPIKE.
+resource "google_monitoring_alert_policy" "llm_errors" {
+  display_name = "OpenRouter LLM call errors"
+  combiner     = "OR"
+  conditions {
+    display_name = "LLM errors > 10 in 5m"
+    condition_threshold {
+      filter          = "resource.type=\"cloud_run_revision\" AND metric.type=\"logging.googleapis.com/user/${google_logging_metric.llm_errors.name}\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 10
+      duration        = "0s"
+      aggregations {
+        alignment_period   = "300s"
         per_series_aligner = "ALIGN_SUM"
       }
     }

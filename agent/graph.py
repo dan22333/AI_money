@@ -148,7 +148,13 @@ def load_context(state: State) -> dict:
 
 def agent(state: State) -> dict:
     model = llm.get_voice_model().bind_tools(tools.ALL_TOOLS)
-    return {"messages": [model.invoke(state["messages"])]}
+    try:
+        return {"messages": [model.invoke(state["messages"])]}
+    except Exception as e:
+        # voice model = Grok via OpenRouter; log the same marker the other LLM paths
+        # use so the OpenRouter alert catches a provider outage on the reply path too.
+        print(f"[llm] openrouter error model=voice ({type(e).__name__})")
+        raise
 
 
 def route(state: State) -> str:
