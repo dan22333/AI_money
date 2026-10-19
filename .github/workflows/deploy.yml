@@ -122,11 +122,18 @@ jobs:
           # fallback → one reply per message. Re-add TASKS_INVOKER_SA only together with
           # that IAM binding if you later require auth on the service.)
           BASE_URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format='value(status.url)' 2>/dev/null || true)
-          ENVS="${ENVS},DEBOUNCE_ENABLED=true,TASKS_QUEUE=jenny-process,TASKS_LOCATION=${REGION},SERVICE_BASE_URL=${BASE_URL}"
+          # DEBOUNCE_SETTLE_SECONDS=2: trim the quiet-window (was 3) to cut ~1s off
+          # end-to-end reply time while still batching rapid-fire bursts.
+          ENVS="${ENVS},DEBOUNCE_ENABLED=true,DEBOUNCE_SETTLE_SECONDS=2,TASKS_QUEUE=jenny-process,TASKS_LOCATION=${REGION},SERVICE_BASE_URL=${BASE_URL}"
           # Memory scaling — LIVE (2026-10-19, after the db-g1-small tier bump + queue apply):
           # HNSW index + pgvector pool sizing, extraction fan-out onto jenny-extract, and
           # expanded recall (multi-probe memory lookup) when composing replies.
-          ENVS="${ENVS},MEMORY_USE_HNSW=true,MEMORY_PG_MINCONN=1,MEMORY_PG_MAXCONN=5,MEMORY_FANOUT_ENABLED=true,EXTRACT_TASKS_QUEUE=jenny-extract,RECALL_STRATEGY=expanded"
+          # RECALL_STRATEGY=context (was expanded): expanded did an extra LLM query-
+          # expansion call + several embeddings + several vector searches per reply
+          # (~2-4s). `context` builds one query from recent turns → one embed → one
+          # search: much faster, still context-aware. Flip back to expanded if recall
+          # quality matters more than latency.
+          ENVS="${ENVS},MEMORY_USE_HNSW=true,MEMORY_PG_MINCONN=1,MEMORY_PG_MAXCONN=5,MEMORY_FANOUT_ENABLED=true,EXTRACT_TASKS_QUEUE=jenny-extract,RECALL_STRATEGY=context"
           if gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
             NO_TRAFFIC="--no-traffic"
             echo "Service exists → candidate at 0% traffic."
