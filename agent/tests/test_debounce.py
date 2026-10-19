@@ -98,15 +98,21 @@ def test_scenario_a_two_messages_one_reply(monkeypatch):
     assert store.get_fan(fan)["processingLease"] is None
 
 
-def test_not_quiet_defers(monkeypatch):
+def test_not_quiet_defers_and_reenqueues(monkeypatch):
+    """Not-settled task must RE-ENQUEUE a follow-up (not just bail) — else a last
+    message whose own task fired slightly early (Cloud Tasks jitter) is orphaned
+    forever. Regression for the 'answer gap' bug."""
     monkeypatch.setattr(settings, "DEBOUNCE_SETTLE_SECONDS", 8.0)
     calls = _fake_generation(monkeypatch)
+    reenq = []
+    monkeypatch.setattr(tasks, "enqueue_process_fan", lambda f, u, d: reenq.append(d) or True)
     fan = "sim:Q"
     _write_fan_msg(fan, "a", "just now", age_seconds=0)  # fresh → not quiet yet
     out = debounce.process_fan(fan, fan)
     assert out["status"] == "not_quiet"
     assert calls == []                           # didn't generate
     assert store.get_fan(fan).get("processingLease") in (None, {})  # never locked
+    assert len(reenq) == 1 and reenq[0] > 0      # scheduled a follow-up → no orphan
 
 
 def test_busy_reenqueues(monkeypatch):
