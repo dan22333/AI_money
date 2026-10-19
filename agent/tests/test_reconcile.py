@@ -54,6 +54,34 @@ def test_reconcile_skips_when_not_connected(monkeypatch):
     assert reconcile.run()["status"] == "skipped"
 
 
+def test_reconcile_dry_run_counts_but_writes_nothing(monkeypatch):
+    """Preview mode: pulls from Fanvue and returns would-change counts, but makes
+    NO writes to the store (no fans, purchases, messages, catalog, or watermarks)."""
+    fake = FakeFanvue(
+        me={"uuid": "creator-0"},
+        followers=[{"uuid": "fan-dry-1", "handle": "d1"}],
+        earnings=[{"user": {"uuid": "fan-dry-1"}, "transactionOrderId": "inv-dry",
+                   "gross": 1500, "date": "2026-10-01"}],
+        chats=[{"user": {"uuid": "fan-dry-1"}}],
+        chat_messages={"fan-dry-1": [
+            {"uuid": "m-dry", "sender": {"uuid": "fan-dry-1"}, "text": "hi", "sentAt": "2026-10-01T00:00:00Z"}]},
+    )
+    fake._media = [{"uuid": "media-dry", "description": "x"}]
+    _patch(monkeypatch, fake)
+
+    res = reconcile.run(dry_run=True)
+
+    assert res["status"] == "ok" and res["dryRun"] is True
+    assert res["fansSynced"] == 1 and res["purchasesSynced"] == 1
+    assert res["messagesSynced"] == 1 and res["mediaSynced"] == 1
+    # nothing persisted
+    assert store._backend().get(store.FANS, "fan-dry-1") is None     # no fan row
+    assert store.list_fans() == []                                    # no fans at all
+    assert store.get_sync_meta("earnings") == {}                      # no watermark moved
+    assert store.get_sync_meta("chat:fan-dry-1") == {}
+    assert store._backend().list(store.CATALOG) == []                 # no catalog write
+
+
 def test_reconcile_backfills_fans_and_purchases(monkeypatch):
     fake = FakeFanvue(
         followers=[{"uuid": "fan-1", "handle": "alice", "displayName": "Alice",

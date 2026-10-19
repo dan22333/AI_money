@@ -39,10 +39,13 @@ def _creator_uuid() -> str:
 
 def _upsert_fan(uuid: str, *, is_follower: bool | None = None, is_subscriber: bool = False,
                 handle: str | None = None, display_name: str | None = None,
-                registered_at: str | None = None) -> None:
+                registered_at: str | None = None, dry_run: bool = False) -> None:
     """Merge a fan by uuid — follower and subscriber are independent flags on the
-    SAME row, so someone who is both is one record with both set."""
+    SAME row, so someone who is both is one record with both set. dry_run skips the
+    persist (used by the preview mode to pull + count without mutating prod)."""
     store.use_namespace_for(uuid)  # real fans → prod DB
+    if dry_run:
+        return  # preview: no reads-that-persist (get_fan would create a default row)
     fan = store.get_fan(uuid)
     at = registered_at or store._now().isoformat()
     if handle:
@@ -57,10 +60,11 @@ def _upsert_fan(uuid: str, *, is_follower: bool | None = None, is_subscriber: bo
         store.mark_followed(fan, at=at, source="reconcile")
     if is_subscriber:
         store.mark_subscribed(fan, at=at, source="reconcile")
-    store.save_fan(fan)
+    if not dry_run:
+        store.save_fan(fan)
 
 
-def _downgrade_dropped_fans(follower_ids: set, subscriber_ids: set) -> int:
+def _downgrade_dropped_fans(follower_ids: set, subscriber_ids: set, dry_run: bool = False) -> int:
     """Clear flags for fans who LEFT — present in our store but absent from the
     live Fanvue list means they unfollowed / unsubscribed. Fanvue's list IS the
     source of truth (someone who cancels just drops off `/v1/subscribers`), so a
@@ -78,12 +82,13 @@ def _downgrade_dropped_fans(follower_ids: set, subscriber_ids: set) -> int:
         left_follow = uuid not in follower_ids and store.mark_unfollowed(fan, source="reconcile")
         left_sub = uuid not in subscriber_ids and store.mark_unsubscribed(fan, source="reconcile")
         if left_follow or left_sub:
-            store.save_fan(fan)
+            if not dry_run:
+                store.save_fan(fan)
             downgraded += 1
     return downgraded
 
 
-def _sync_fans() -> dict:
+def _sync_fans(dry_run: bool = False) -> dict:
     """Upsert followers + subscribers, then downgrade anyone who dropped off the
     live lists (unfollow/unsubscribe). Returns processed + downgraded counts."""
     follower_ids: set = set()
@@ -95,7 +100,8 @@ def _sync_fans() -> dict:
             continue
         follower_ids.add(uuid)
         _upsert_fan(uuid, is_follower=True, handle=f.get("handle"),
-                    display_name=f.get("displayName"), registered_at=f.get("registeredAt"))
+                    display_name=f.get("displayName"), registered_at=f.get("registeredAt"),
+                    dry_run=dry_run)
         n += 1
     for s in fanvue.list_subscribers():
         uuid = s.get("uuid") or s.get("fanUuid")
@@ -103,13 +109,14 @@ def _sync_fans() -> dict:
             continue
         subscriber_ids.add(uuid)
         _upsert_fan(uuid, is_subscriber=True, handle=s.get("handle"),
-                    display_name=s.get("displayName"), registered_at=s.get("subscribedAt"))
+                    display_name=s.get("displayName"), registered_at=s.get("subscribedAt"),
+                    dry_run=dry_run)
         n += 1
-    downgraded = _downgrade_dropped_fans(follower_ids, subscriber_ids)
+    downgraded = _downgrade_dropped_fans(follower_ids, subscriber_ids, dry_run=dry_run)
     return {"fansSynced": n, "fansDowngraded": downgraded}
 
 
-def _sync_earnings() -> int:
+def _sync_earnings(dry_run: bool = False) -> dict:
     """Upsert real purchases (gross > 0). $0 rows (free follows/subs) are not
     money and would mis-tier a fan, so they're skipped. Delta by last date."""
     wm = store.get_sync_meta("earnings")
@@ -127,9 +134,10 @@ def _sync_earnings() -> int:
         if not uuid or not invoice or gross <= 0:
             continue  # skip incomplete rows and $0 (follows/free subs aren't spend)
         store.use_namespace_for(uuid)
-        store.add_purchase(uuid, invoice, gross_cents=gross, source=e.get("source", "reconcile"))
+        if not dry_run:
+            store.add_purchase(uuid, invoice, gross_cents=gross, source=e.get("source", "reconcile"))
         n += 1
-    if latest and latest != since:
+    if latest and latest != since and not dry_run:
         store.set_sync_meta("earnings", {"lastDate": latest})
     return {"purchasesSynced": n}
 
@@ -174,7 +182,7 @@ def _backfill_memory(fan_uuid: str) -> int:
     return fed
 
 
-def _sync_messages(creator_uuid: str) -> dict:
+def _sync_messages(creator_uuid: str, dry_run: bool = False) -> dict:
     """Backfill full chat history (both directions), idempotent by messageUuid.
     Per-chat delta via the last sentAt watermark. Then feed the imported history
     into long-term memory (mem0) so backfilled fans aren't a blank slate."""
@@ -198,13 +206,17 @@ def _sync_messages(creator_uuid: str) -> dict:
             sender = (m.get("sender") or {}).get("uuid")
             role = "jenny" if (sender and sender == creator_uuid) else "fan"
             sent = m.get("sentAt", "")
-            if store.upsert_message(uuid, mid, role, m.get("text") or "", sent_at=sent,
-                                    via="reconcile"):
+            if dry_run:
+                n += 1  # would upsert (preview counts pulled messages, no write)
+            elif store.upsert_message(uuid, mid, role, m.get("text") or "", sent_at=sent,
+                                      via="reconcile"):
                 n += 1
             if sent and (not latest or sent > latest):
                 latest = sent
             if role == "jenny" and sent and sent > latest_jenny:
                 latest_jenny = sent
+        if dry_run:
+            continue  # no watermark / memory writes in preview mode
         if latest and latest != since:
             store.set_sync_meta(f"chat:{uuid}", {"lastSentAt": latest})
         # Debounce correctness: mark backfilled history up to our LAST REPLY as
@@ -226,7 +238,7 @@ def _sync_messages(creator_uuid: str) -> dict:
     return {"messagesSynced": n, "memoriesBackfilled": extracted, "memoriesQueued": queued}
 
 
-def _sync_media() -> dict:
+def _sync_media(dry_run: bool = False) -> dict:
     """Backfill the creator's media library into the catalog (teasers/selling).
     NOTE: recommendedPrice unit is stored as-is pending confirmation."""
     store.use_namespace_for("catalog")  # catalog is global (real namespace)
@@ -236,27 +248,34 @@ def _sync_media() -> dict:
         if not uuid:
             continue
         desc = m.get("description") or m.get("caption") or m.get("name") or ""
-        store.add_catalog_item(uuid, desc, tags=m.get("tags") or [], heat=2,
-                               suggested_price_cents=int(m.get("recommendedPrice") or 0),
-                               meta_source="fanvue",
-                               status="ready" if m.get("status") in (None, "ready", "processed", "completed")
-                               else str(m.get("status")))
+        if not dry_run:
+            store.add_catalog_item(uuid, desc, tags=m.get("tags") or [], heat=2,
+                                   suggested_price_cents=int(m.get("recommendedPrice") or 0),
+                                   meta_source="fanvue",
+                                   status="ready" if m.get("status") in (None, "ready", "processed", "completed")
+                                   else str(m.get("status")))
         n += 1
     return {"mediaSynced": n}
 
 
-def run(since: str | None = None) -> dict:
+def run(since: str | None = None, dry_run: bool = False) -> dict:
     """Run every sync, isolated so one failing source can't discard the others.
-    Returns a summary (also the HTTP response body)."""
+    Returns a summary (also the HTTP response body).
+
+    dry_run=True PREVIEWS the sync: it still pulls from Fanvue and returns the counts
+    of what WOULD change, but writes NOTHING to Firestore / mem0 (no upserts,
+    downgrades, watermarks, or memory extraction). Use it to sanity-check reach +
+    connectivity before a real run. `*Synced` counts in preview are the items pulled
+    and considered, not precise insert-vs-update deltas."""
     if not fanvue.ready:
         return {"status": "skipped", "reason": "fanvue not connected"}
     creator = _creator_uuid()
-    result: dict = {"status": "ok"}
+    result: dict = {"status": "ok", "dryRun": dry_run}
     errors: dict = {}
-    for name, fn in (("fans", _sync_fans),
-                     ("purchases", _sync_earnings),
-                     ("messages", lambda: _sync_messages(creator)),
-                     ("media", _sync_media)):
+    for name, fn in (("fans", lambda: _sync_fans(dry_run)),
+                     ("purchases", lambda: _sync_earnings(dry_run)),
+                     ("messages", lambda: _sync_messages(creator, dry_run)),
+                     ("media", lambda: _sync_media(dry_run))):
         try:
             result.update(fn())  # each sync returns its own {xSynced: n, ...} counts
         except Exception as e:

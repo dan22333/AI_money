@@ -211,11 +211,14 @@ def refresh_tokens(x_sim_secret: str | None = Header(default=None)):
 
 
 @app.post("/admin/reconcile")
-def reconcile(x_sim_secret: str | None = Header(default=None)):
+def reconcile(dry_run: bool = False, x_sim_secret: str | None = Header(default=None)):
+    """Pull from Fanvue and upsert idempotently into Firestore/mem0. Pass
+    ?dry_run=true to PREVIEW: pulls + returns would-change counts but writes
+    nothing — a safety rail to sanity-check reach/connectivity before a real run."""
     if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
     import reconcile as _reconcile
-    return _reconcile.run()
+    return _reconcile.run(dry_run=dry_run)
 
 
 @app.post("/admin/dedup_messages")
