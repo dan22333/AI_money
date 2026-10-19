@@ -54,6 +54,18 @@ def test_reconcile_skips_when_not_connected(monkeypatch):
     assert reconcile.run()["status"] == "skipped"
 
 
+def test_heat_from_media_tags():
+    """Heat is derived from Fanvue's nsfwCategory: explicit→4, suggestive→3, SFW→2,
+    and ANY explicit signal wins (conservative). Catalog media is never COLD."""
+    expl = {"tags": {"nsfwCategory": ["lingerie", "nudes"], "isNsfw": False}}  # explicit wins over lingerie
+    assert reconcile._heat_from_media(expl) == 4
+    assert reconcile._heat_from_media({"tags": {"nsfwCategory": ["bikini"]}}) == 3
+    assert reconcile._heat_from_media({"tags": {"nsfwCategory": ["safe for work"]}}) == 2
+    assert reconcile._heat_from_media({"tags": {"isNsfw": True, "nsfwCategory": []}}) == 3  # nsfw, uncategorized
+    assert reconcile._heat_from_media({"tags": []}) == 2       # no tag blob → WARM
+    assert reconcile._heat_from_media({}) == 2
+
+
 def test_reconcile_dry_run_counts_but_writes_nothing(monkeypatch):
     """Preview mode: pulls from Fanvue and returns would-change counts, but makes
     NO writes to the store (no fans, purchases, messages, catalog, or watermarks)."""
