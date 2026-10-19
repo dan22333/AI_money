@@ -135,6 +135,16 @@ resource "google_sql_database" "jenny" {
   instance = google_sql_database_instance.jenny_pg.name
 }
 
+# Staging database on the SAME instance for sim: traffic. Gives test memories their
+# own schema so a Postgres migration can be rehearsed here (alembic upgrade runs on
+# jenny_staging first in the deploy pipeline) before it touches prod `jenny`. Free
+# (you pay per instance, not per database). Upgrade to a separate instance later by
+# repointing PG_DB_STAGING — no app change. See agent/memory.py:_db_for.
+resource "google_sql_database" "jenny_staging" {
+  name     = "jenny_staging"
+  instance = google_sql_database_instance.jenny_pg.name
+}
+
 # NOTE: the `postgres` user's password is set out-of-band (gcloud) and stored in
 # the jenny-pg-password secret — kept out of TF state, like all other secrets.
 # One-time, after apply:
@@ -253,11 +263,9 @@ resource "google_project_iam_member" "runtime_tasks_enqueuer" {
   member  = "serviceAccount:${google_service_account.runtime.email}"
 }
 
-# Analytics warehouse (Firestore exports land here in Phase 2).
-resource "google_bigquery_dataset" "analytics" {
-  dataset_id = "jenny_analytics"
-  location   = "US"
-}
+# (BigQuery analytics warehouse removed 2026-10-19 — it was provisioned but never
+# wired to anything. Re-add a dataset + a Firestore→BQ export, with its own
+# `_staging` dataset, if/when an analytics pipeline is actually built.)
 
 # Nightly reconcile: Cloud Scheduler POSTs /admin/reconcile so missed webhooks
 # (subscribers, payments) get repaired from the Fanvue API once a day. Created

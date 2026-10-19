@@ -1,7 +1,7 @@
 name: Deploy
 
 # Deploys ONLY after CI succeeds on main. Never on a red build, never on branches.
-# Four chained jobs (build → canary → smoke → promote) so the Actions "graph" view
+# Chained jobs (build → migrate → deploy-candidate → smoke → promote) so the Actions "graph" view
 # renders the pipeline as a DAG and each stage is its own pass/fail node.
 on:
   workflow_run:
@@ -42,11 +42,11 @@ jobs:
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
 
-  # 1b) Migrate the pgvector DB (alembic upgrade head) via the Cloud SQL Auth
+  # 1b) Migrate the pgvector DBs (alembic upgrade head) via the Cloud SQL Auth
   #     Proxy, BEFORE the candidate serves — so the `vector` extension (and any
-  #     tables we own) exist. mem0 still manages its own table. Runs against the
-  #     one `jenny` DB (sim + real collections share it), so a single upgrade
-  #     covers both namespaces.
+  #     tables we own) exist. mem0 still manages its own table. Runs on the STAGING
+  #     database (jenny_staging) FIRST as a rehearsal — a broken migration fails
+  #     there and halts the deploy before prod (jenny) is touched — then on prod.
   migrate:
     needs: build
     runs-on: ubuntu-latest
@@ -70,14 +70,22 @@ jobs:
           PROXY_PID=$!
           for i in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null && { echo "proxy up"; break; }; sleep 1; done
           uv sync --frozen
-          export PG_HOST=127.0.0.1 PG_USER=postgres PG_DB=jenny
+          export PG_HOST=127.0.0.1 PG_USER=postgres
           export PG_PASSWORD="$(gcloud secrets versions access latest --secret=jenny-pg-password --project "$PROJECT")"
-          uv run alembic upgrade head
+          # Rehearse on the staging DB FIRST (its own schema) — a broken migration
+          # fails here and halts the deploy before prod `jenny` is touched — then prod.
+          for DB in jenny_staging jenny; do
+            echo "== alembic upgrade head on $DB =="
+            PG_DB=$DB uv run alembic upgrade head
+          done
           kill $PROXY_PID 2>/dev/null || true
 
   # 2) Deploy the new revision with 0% traffic + a `candidate` preview tag.
   #    (First-ever deploy omits --no-traffic, which Cloud Run rejects on create.)
-  canary:
+  #    NOTE: this is NOT a traffic canary — it deploys a candidate at 0% traffic.
+  #    A real canary (shift a small % of live traffic + watch metrics) would be a
+  #    new stage inserted between `smoke` and `promote`.
+  deploy-candidate:
     needs: migrate
     runs-on: ubuntu-latest
     steps:
@@ -118,7 +126,7 @@ jobs:
           ENVS="${ENVS},MEMORY_USE_HNSW=true,MEMORY_PG_MINCONN=1,MEMORY_PG_MAXCONN=5,MEMORY_FANOUT_ENABLED=true,EXTRACT_TASKS_QUEUE=jenny-extract,RECALL_STRATEGY=expanded"
           if gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
             NO_TRAFFIC="--no-traffic"
-            echo "Service exists → candidate at 0% traffic (canary)."
+            echo "Service exists → candidate at 0% traffic."
           else
             NO_TRAFFIC=""
             echo "First-ever deploy → creating service; this revision serves 100%."
@@ -135,7 +143,7 @@ jobs:
 
   # 3) REAL-MODEL smoke test against the candidate — gates the cutover.
   smoke:
-    needs: canary
+    needs: deploy-candidate
     runs-on: ubuntu-latest
     steps:
       - uses: google-github-actions/auth@v2

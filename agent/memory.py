@@ -41,7 +41,15 @@ def _collection_for(namespace: str) -> str:
     return base if namespace == "real" else f"{base}_sim"
 
 
-def _pg_connection_string() -> str:
+def _db_for(namespace: str) -> str:
+    """real → prod database (PG_DB); sim → the staging database (PG_DB_STAGING) on
+    the SAME instance. Separate databases give test memories AND Postgres migrations
+    their own schema, so a migration can be rehearsed on staging before prod — the
+    pgvector equivalent of Firestore's `staging` DB."""
+    return settings.PG_DB if namespace == "real" else settings.PG_DB_STAGING
+
+
+def _pg_connection_string(db: str | None = None) -> str:
     """libpq URI for the pgvector store.
 
     mem0's pgvector provider only knows how to build `…@{host}:{port}/…`, which
@@ -53,22 +61,25 @@ def _pg_connection_string() -> str:
     how migrations/env.py connects. The password is percent-encoded so a special
     char in it can't corrupt the URI.
     """
+    db = db or settings.PG_DB
     user = quote(settings.PG_USER, safe="")
     pw = quote(settings.PG_PASSWORD, safe="")
     if settings.PG_HOST.startswith("/"):  # unix socket (Cloud Run)
-        return (f"postgresql://{user}:{pw}@/{settings.PG_DB}"
+        return (f"postgresql://{user}:{pw}@/{db}"
                 f"?host={settings.PG_HOST}")
-    return f"postgresql://{user}:{pw}@{settings.PG_HOST}:5432/{settings.PG_DB}"
+    return f"postgresql://{user}:{pw}@{settings.PG_HOST}:5432/{db}"
 
 
-def _mem0_config(collection: str) -> dict:
-    """Build the self-hosted mem0 config for one collection."""
+def _mem0_config(collection: str, db: str | None = None) -> dict:
+    """Build the self-hosted mem0 config for one collection in database `db`
+    (defaults to the prod PG_DB)."""
+    db = db or settings.PG_DB
     return {
         "vector_store": {
             "provider": "pgvector",
             "config": {
-                "dbname": settings.PG_DB,
-                "connection_string": _pg_connection_string(),
+                "dbname": db,
+                "connection_string": _pg_connection_string(db),
                 "collection_name": collection,
                 "embedding_model_dims": settings.EMBED_DIM,
                 # scaling knobs (mem0-native): HNSW index for fast ANN recall +
@@ -105,7 +116,8 @@ def _client_for(namespace: str) -> Optional[object]:
         return _clients[namespace]
     try:
         from mem0 import Memory
-        _clients[namespace] = Memory.from_config(_mem0_config(_collection_for(namespace)))
+        _clients[namespace] = Memory.from_config(
+            _mem0_config(_collection_for(namespace), _db_for(namespace)))
     except Exception as e:  # pragma: no cover - any failure degrades to fallback
         print(f"[memory] mem0 unavailable for ns={namespace} ({e}); using in-memory fallback.")
         _clients[namespace] = None
