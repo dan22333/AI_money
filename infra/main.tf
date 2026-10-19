@@ -225,7 +225,12 @@ resource "google_cloud_tasks_queue" "process" {
 
   rate_limits {
     max_dispatches_per_second = 50
-    max_concurrent_dispatches = 20
+    # Concurrent reply-generations across the whole fleet (~throughput = this ÷
+    # avg-reply-time). 50 ÷ ~4s ≈ ~12 replies/s. Keep this ≤ OpenRouter's allowed
+    # concurrency; raise together with Cloud Run maxScale + a low containerConcurrency
+    # so load SPREADS across instances (memory isn't an autoscale trigger → OOM risk
+    # if too many pile into one instance). Tune from the p95-latency / 5xx alerts.
+    max_concurrent_dispatches = 50
   }
   retry_config {
     max_attempts       = 8
