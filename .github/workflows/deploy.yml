@@ -96,7 +96,12 @@ jobs:
           ENVS="USE_FIRESTORE=true,GCP_PROJECT=${PROJECT},FIRESTORE_DATABASE=(default),SIM_FIRESTORE_DATABASE=staging,OPENROUTER_MODEL=x-ai/grok-4.3,MODE_MODEL=mistralai/mistral-nemo,MEMORY_ENABLED=true,PG_INSTANCE=${PG_INSTANCE},PG_DB=jenny,PG_USER=postgres,EMBED_MODEL=text-embedding-004,EMBED_DIM=768,VERTEX_REGION=${REGION},GOOGLE_CLOUD_PROJECT=${PROJECT},GOOGLE_CLOUD_LOCATION=${REGION}"
           # Fanvue: client id (GitHub secret) + token store = Secret Manager. The
           # fanvue-oauth-tokens secret value is created out-of-band (one-time OAuth).
-          ENVS="${ENVS},OAUTH_CLIENT_ID=${{ secrets.FANVUE_CLIENT_ID }},FANVUE_TOKENS_SOURCE=secret"
+          # FANVUE_TOKENS_SOURCE=firestore: the rotating OAuth token lives in a single
+          # overwrite-in-place Firestore doc per creator (no Secret Manager version
+          # churn, multi-creator-ready). On first boot the doc is auto-seeded from the
+          # fanvue-oauth-tokens secret, so cutover needs no manual copy. A Cloud
+          # Scheduler cron (infra) POSTs /admin/refresh_tokens to keep it fresh.
+          ENVS="${ENVS},OAUTH_CLIENT_ID=${{ secrets.FANVUE_CLIENT_ID }},FANVUE_TOKENS_SOURCE=firestore"
           # Per-fan debounce (batch rapid-fire messages → one reply). LIVE (2026-10-19).
           # SERVICE_BASE_URL comes from the live service (empty on the first-ever deploy,
           # harmless). We do NOT attach an OIDC token to the Cloud Tasks job

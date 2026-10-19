@@ -286,6 +286,36 @@ resource "google_cloud_scheduler_job" "nightly_reconcile" {
   }
 }
 
+# Proactive Fanvue OAuth token refresher — the "single writer". Fanvue refresh
+# tokens are single-use + rotating and can idle out during quiet periods, so a
+# cron keeps the token warm instead of relying on message traffic (on-demand
+# refresh remains a fallback). POSTs /admin/refresh_tokens every 30 min; the
+# handler refreshes only tokens within FANVUE_REFRESH_SKEW_SECONDS of expiry,
+# under a per-creator Firestore lock (idempotent, safe for Scheduler's at-least-
+# once double-fires). Created only when reconcile_sim_secret is supplied (same
+# sim-secret as the other /admin routes; transits TF state like nightly_reconcile).
+resource "google_cloud_scheduler_job" "refresh_tokens" {
+  count     = var.reconcile_sim_secret == "" ? 0 : 1
+  name      = "jenny-refresh-tokens"
+  region    = var.region
+  schedule  = "*/30 * * * *" # every 30 min (under the ~60-min access-token life)
+  time_zone = "Etc/UTC"
+
+  http_target {
+    http_method = "POST"
+    uri         = "${var.service_url}/admin/refresh_tokens"
+    headers = {
+      "x-sim-secret" = var.reconcile_sim_secret
+      "Content-Type" = "application/json"
+    }
+    body = base64encode("{}")
+  }
+
+  retry_config {
+    retry_count = 2
+  }
+}
+
 # NOTE: Secret Manager secret VALUES are intentionally NOT managed by Terraform.
 # The secret resources were created via gcloud and their versions are managed by
 # gcloud/CI, so sensitive values never live in TF state.

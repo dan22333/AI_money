@@ -64,6 +64,7 @@ PURCHASES = "purchases"
 PROCESSED = "processed_events"  # webhook idempotency ledger
 SYNC_META = "sync_meta"         # per-source reconcile watermarks (delta sync)
 LOCKS = "locks"                 # cross-instance named locks (e.g. token refresh)
+FANVUE_TOKENS = "fanvue_tokens"  # one overwrite-in-place OAuth token doc per creator
 
 
 def _now() -> datetime:  # overridable in tests
@@ -632,6 +633,22 @@ def release_lock(name: str, owner: str) -> None:
         return None, None
 
     _backend().update_atomic(LOCKS, name, fn)
+
+
+def get_fanvue_token(creator_id: str) -> Optional[dict]:
+    """Read the stored OAuth token doc for one creator (None if absent)."""
+    return _backend().get(FANVUE_TOKENS, creator_id)
+
+
+def set_fanvue_token(creator_id: str, data: dict) -> None:
+    """Overwrite the OAuth token doc for one creator in place (no versioning)."""
+    _backend().set(FANVUE_TOKENS, creator_id, data)
+
+
+def list_fanvue_token_creator_ids() -> List[str]:
+    """Every creator id that has a stored token doc (for the proactive refresher
+    to iterate). Relies on each doc carrying its own creatorId field."""
+    return [d.get("creatorId") for d in _backend().list(FANVUE_TOKENS) if d.get("creatorId")]
 
 
 def merge_fan_fields(fan_id: str, fields: dict) -> None:
