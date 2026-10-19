@@ -135,6 +135,12 @@ class Settings:
     # under the ~60-min access-token life so each ~30-min cron keeps it valid AND
     # keeps the single-use refresh token from idling out during quiet periods.
     FANVUE_REFRESH_SKEW_SECONDS = float(os.environ.get("FANVUE_REFRESH_SKEW_SECONDS", "1800"))
+    # Catalog pricing by heat (cents), applied during backfill. WARM(2) = free (the
+    # teaser/hook you send to entice); FLIRTY(3) + EXPLICIT(4) are the paid tiers.
+    # Tune without code via env. heat 4 (most explicit) is the top price.
+    PRICE_WARM_CENTS = int(os.environ.get("PRICE_WARM_CENTS", "0"))         # free teaser
+    PRICE_FLIRTY_CENTS = int(os.environ.get("PRICE_FLIRTY_CENTS", "3000"))  # $30
+    PRICE_EXPLICIT_CENTS = int(os.environ.get("PRICE_EXPLICIT_CENTS", "5000"))  # $50
     # Fanvue refresh tokens are SINGLE-USE + rotating, but Cloud Run runs many
     # instances. Without coordination, two instances refresh the same token at
     # once → the first rotates it, invalidating the token the others (and the

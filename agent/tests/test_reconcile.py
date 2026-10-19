@@ -66,6 +66,17 @@ def test_heat_from_media_tags():
     assert reconcile._heat_from_media({}) == 2
 
 
+def test_price_for_heat(monkeypatch):
+    """Paid tiers priced by heat; WARM is free (teaser). heat 4 = top price."""
+    from config import settings
+    monkeypatch.setattr(settings, "PRICE_WARM_CENTS", 0)
+    monkeypatch.setattr(settings, "PRICE_FLIRTY_CENTS", 3000)
+    monkeypatch.setattr(settings, "PRICE_EXPLICIT_CENTS", 5000)
+    assert reconcile._price_for(4) == 5000   # explicit, highest
+    assert reconcile._price_for(3) == 3000   # flirty
+    assert reconcile._price_for(2) == 0      # warm = free teaser
+
+
 def test_reconcile_dry_run_counts_but_writes_nothing(monkeypatch):
     """Preview mode: pulls from Fanvue and returns would-change counts, but makes
     NO writes to the store (no fans, purchases, messages, catalog, or watermarks)."""
@@ -265,18 +276,24 @@ def test_reconcile_backfill_stops_watermark_on_partial_memory_failure(monkeypatc
 
 
 def test_reconcile_backfills_media_catalog(monkeypatch):
+    from config import settings
     fake = FakeFanvue()
-    fake._media = [{"uuid": "media-1", "description": "beach set", "tags": ["beach"],
-                    "recommendedPrice": 1200, "status": "ready"}]
+    fake._media = [
+        # SFW → WARM (free teaser)
+        {"uuid": "media-1", "description": "beach set", "tags": ["beach"], "status": "ready"},
+        # explicit → EXPLICIT (paid by heat)
+        {"uuid": "media-2", "description": "nude set", "tags": {"nsfwCategory": ["nudes"]}, "status": "ready"},
+    ]
     _patch(monkeypatch, fake)
 
     out = reconcile.run()
-    assert out["mediaSynced"] == 1
+    assert out["mediaSynced"] == 2
     store.use_namespace_for("catalog")
-    item = store._catalog_item("media-1")
-    assert item["description"] == "beach set"
-    assert item["suggestedPriceCents"] == 1200
-    assert item["status"] == "ready"
+    warm = store._catalog_item("media-1")
+    assert warm["description"] == "beach set" and warm["status"] == "ready"
+    assert warm["heat"] == 2 and warm["suggestedPriceCents"] == settings.PRICE_WARM_CENTS   # free teaser
+    expl = store._catalog_item("media-2")
+    assert expl["heat"] == 4 and expl["suggestedPriceCents"] == settings.PRICE_EXPLICIT_CENTS  # paid by heat
 
 
 def test_reconcile_is_idempotent(monkeypatch):
