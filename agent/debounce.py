@@ -82,6 +82,15 @@ def process_fan(fan_id: str, user_uuid: str, *, is_retry: bool = False) -> dict:
     newest_ts = max((m.get("ts") or "") for m in batch)
     quiet_for = _seconds_since(newest_ts)
     if quiet_for < settle:
+        # Not settled yet. Cloud Tasks dispatch has jitter and can fire a task
+        # slightly EARLY (observed ~2.85s for a 3s settle), so even the LAST
+        # message's own task can land just under `settle`. If we only bailed, that
+        # last message would never be answered — no later task exists to pick it up
+        # (the "answer gap" bug). So RE-ENQUEUE a short follow-up: a batch is always
+        # eventually processed regardless of jitter. Idempotent — once a reply lands
+        # the watermark advances and any redundant task finds "nothing". +1s buffer
+        # so the retry lands comfortably past the settle window, not early again.
+        tasks.enqueue_process_fan(fan_id, user_uuid, max(settle - quiet_for, 0.0) + 1.0)
         return {"status": "not_quiet", "fan": fan_id, "quietFor": round(quiet_for, 2)}
 
     # 3: acquire the per-fan lock
