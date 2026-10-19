@@ -120,11 +120,15 @@ resource "google_sql_database_instance" "jenny_pg" {
     }
     # Cross-instance connection budget: each Cloud Run instance opens up to
     # MEMORY_PG_MAXCONN connections, and they SUM at Postgres. Keep
-    # MEMORY_PG_MAXCONN x maxScale under this instance's max_connections, OR enable
-    # Cloud SQL managed connection pooling (transaction mode) so the pooler
-    # multiplexes many instances onto a few backend connections. Managed pooling is
-    # toggled on the instance (console/gcloud) and is the right answer beyond a
-    # handful of instances — see docs/debounce.md + memory layer notes.
+    # MEMORY_PG_MAXCONN x maxScale under this instance's max_connections.
+    # NOTE: Cloud SQL *managed* connection pooling (PgBouncer) is NOT available on
+    # this edition — it requires Enterprise PLUS (db-perf-optimized tiers, much
+    # pricier). At our scale, connection BUDGETING suffices: connections scale with
+    # Cloud Run instances (~tens), not fans, so e.g. maxScale=20 x MAXCONN=3 = 60
+    # stays under g1-small's limit even at 1-2k fans. If we outgrow that, the
+    # options are: (a) lower MAXCONN / cap maxScale, (b) self-host a PgBouncer
+    # service in front of Cloud SQL (works on any edition), or (c) upgrade to
+    # Enterprise Plus for managed pooling. See docs/debounce.md + memory notes.
   }
   # Prevent accidental teardown of the fan-memory database.
   deletion_protection = true
