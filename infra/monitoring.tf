@@ -183,6 +183,29 @@ resource "google_monitoring_alert_policy" "process_queue_depth" {
   notification_channels = local.alert_channels
 }
 
+# Memory pressure: Cloud Run does NOT autoscale on memory, so a too-high
+# containerConcurrency packs too many heavy replies into one instance and OOMs
+# (killed → request fails → task retries = churn). This alert warns BEFORE that so
+# we can lower containerConcurrency with data instead of guessing.
+resource "google_monitoring_alert_policy" "memory_utilization" {
+  display_name = "jenny-agent memory utilization high"
+  combiner     = "OR"
+  conditions {
+    display_name = "container memory p95 > 85% for 5m"
+    condition_threshold {
+      filter          = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"jenny-agent\" AND metric.type=\"run.googleapis.com/container/memory/utilizations\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0.85
+      duration        = "300s"
+      aggregations {
+        alignment_period   = "300s"
+        per_series_aligner = "ALIGN_PERCENTILE_95"
+      }
+    }
+  }
+  notification_channels = local.alert_channels
+}
+
 # Latency regression (p95 request latency).
 resource "google_monitoring_alert_policy" "latency_p95" {
   display_name = "jenny-agent p95 latency high"
