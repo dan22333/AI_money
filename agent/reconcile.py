@@ -238,9 +238,33 @@ def _sync_messages(creator_uuid: str, dry_run: bool = False) -> dict:
     return {"messagesSynced": n, "memoriesBackfilled": extracted, "memoriesQueued": queued}
 
 
+# Fanvue's own NSFW tags → our heat ladder (WARM=2 · FLIRTY=3 · EXPLICIT=4). Any
+# EXPLICIT category wins (conservative), then any suggestive one, then nsfw-but-
+# uncategorized → FLIRTY, else WARM. Catalog media is never COLD. Fanvue's isNsfw
+# flag and nsfwCategory sometimes disagree, so we trust the specific categories and
+# treat ANY explicit signal as explicit (a mis-tag errs toward gating LATER, safer).
+_EXPLICIT_CATS = {"nudes", "nude", "boobs", "nipples", "ass", "vagina", "pussy",
+                  "sex", "sexual", "explicit", "penetration", "cum"}
+_FLIRTY_CATS = {"lingerie", "bikini", "underwear", "thong", "bra", "swimwear", "topless"}
+
+
+def _heat_from_media(m: dict) -> int:
+    """Classify an item's heat from Fanvue's NSFW tags (see comment above)."""
+    tagblob = m.get("tags") if isinstance(m.get("tags"), dict) else {}
+    cats = {str(c).lower() for c in (tagblob.get("nsfwCategory") or [])}
+    if cats & _EXPLICIT_CATS:
+        return 4
+    if cats & _FLIRTY_CATS:
+        return 3
+    if tagblob.get("isNsfw") or m.get("isNsfw"):
+        return 3  # flagged nsfw but no specific category → at least FLIRTY
+    return 2
+
+
 def _sync_media(dry_run: bool = False) -> dict:
     """Backfill the creator's media library into the catalog (teasers/selling).
-    NOTE: recommendedPrice unit is stored as-is pending confirmation."""
+    Heat is derived per item from Fanvue's NSFW tags so explicit content is gated to
+    EXPLICIT mode, not shown in WARM. NOTE: recommendedPrice unit stored as-is."""
     store.use_namespace_for("catalog")  # catalog is global (real namespace)
     n = 0
     for m in fanvue.list_media():
@@ -249,7 +273,8 @@ def _sync_media(dry_run: bool = False) -> dict:
             continue
         desc = m.get("description") or m.get("caption") or m.get("name") or ""
         if not dry_run:
-            store.add_catalog_item(uuid, desc, tags=m.get("tags") or [], heat=2,
+            store.add_catalog_item(uuid, desc, tags=m.get("tags") or [],
+                                   heat=_heat_from_media(m),
                                    suggested_price_cents=int(m.get("recommendedPrice") or 0),
                                    meta_source="fanvue",
                                    status="ready" if m.get("status") in (None, "ready", "processed", "completed")
