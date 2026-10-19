@@ -19,6 +19,7 @@ Mode→heat levels:  COLD=1  WARM=2  FLIRTY=3  EXPLICIT=4
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import copy
 from datetime import datetime, timedelta, timezone
@@ -42,6 +43,19 @@ def use_namespace_for(fan_id: str) -> None:
 def current_namespace() -> str:
     return _namespace.get()
 
+
+@contextlib.contextmanager
+def namespace(ns: str):
+    """Temporarily force the Firestore namespace, restoring it on exit. Used to
+    pin cross-instance concerns (e.g. the Fanvue token-refresh lock) to the real
+    DB regardless of which fan's request triggered them, so sim and real traffic
+    contend on the SAME lock rather than two independent ones."""
+    tok = _namespace.set(ns)
+    try:
+        yield
+    finally:
+        _namespace.reset(tok)
+
 FANS = "fans"
 CATALOG = "catalog"
 BUNDLES = "bundles"
@@ -49,6 +63,7 @@ MESSAGES = "messages"
 PURCHASES = "purchases"
 PROCESSED = "processed_events"  # webhook idempotency ledger
 SYNC_META = "sync_meta"         # per-source reconcile watermarks (delta sync)
+LOCKS = "locks"                 # cross-instance named locks (e.g. token refresh)
 
 
 def _now() -> datetime:  # overridable in tests
@@ -588,6 +603,35 @@ def release_lease(fan_id: str, owner: str) -> None:
         return None, None
 
     _backend().update_atomic(FANS, fan_id, fn)
+
+
+def acquire_lock(name: str, owner: str, ttl_seconds: int) -> bool:
+    """Atomically grab a named cross-instance lock. True if acquired (free, or the
+    previous holder's lease expired → a dead holder self-heals), False if a live
+    owner still holds it. Generic sibling of acquire_lease, keyed by an arbitrary
+    name instead of a fan id — used to serialize Fanvue OAuth token refresh across
+    Cloud Run instances so the single-use refresh token isn't rotated twice at once."""
+    now = _now()
+    expires = (now + timedelta(seconds=ttl_seconds)).isoformat()
+    now_iso = now.isoformat()
+
+    def fn(cur):
+        if cur and cur.get("owner") != owner and (cur.get("expiresAt") or "") > now_iso:
+            return None, False  # held by a live owner
+        return {"owner": owner, "expiresAt": expires}, True
+
+    return _backend().update_atomic(LOCKS, name, fn)
+
+
+def release_lock(name: str, owner: str) -> None:
+    """Release a named lock, but only if we still own it (a lease we lost to expiry
+    now belongs to whoever took it over)."""
+    def fn(cur):
+        if cur and cur.get("owner") == owner:
+            return {"owner": None, "expiresAt": None}, None
+        return None, None
+
+    _backend().update_atomic(LOCKS, name, fn)
 
 
 def merge_fan_fields(fan_id: str, fields: dict) -> None:

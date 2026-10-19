@@ -9,6 +9,28 @@ def _seed():
     store.add_catalog_item("explicit1", "spicy bedroom set", ["spicy"], heat=4, suggested_price_cents=1500)
 
 
+def test_named_lock_is_mutually_exclusive_and_self_heals():
+    # free → first owner wins, a different live owner is refused
+    assert store.acquire_lock("L", "owner-a", ttl_seconds=60) is True
+    assert store.acquire_lock("L", "owner-b", ttl_seconds=60) is False
+    # the holder can re-acquire (idempotent) and then release it
+    assert store.acquire_lock("L", "owner-a", ttl_seconds=60) is True
+    store.release_lock("L", "owner-a")
+    assert store.acquire_lock("L", "owner-b", ttl_seconds=60) is True
+    # a release by someone who no longer owns it is a no-op
+    store.release_lock("L", "owner-a")
+    assert store.acquire_lock("L", "owner-c", ttl_seconds=60) is False
+    store.release_lock("L", "owner-b")
+
+
+def test_named_lock_expires_so_a_dead_holder_cannot_wedge_it():
+    assert store.acquire_lock("L2", "dead", ttl_seconds=-1) is True  # already expired
+    # expired lease → a new owner may steal it
+    assert store.acquire_lock("L2", "live", ttl_seconds=60) is True
+    assert store.acquire_lock("L2", "other", ttl_seconds=60) is False
+    store.release_lock("L2", "live")
+
+
 def test_heat_gate_excludes_too_hot():
     _seed()
     warm = {i["mediaUuid"] for i in store.eligible_media("sim:f", "WARM")}

@@ -117,6 +117,17 @@ class Settings:
     # out-of-band by the one-time OAuth browser flow (scripts/fanvue_auth.py).
     FANVUE_TOKENS_SOURCE = os.environ.get("FANVUE_TOKENS_SOURCE", "file")
     FANVUE_TOKENS_SECRET = os.environ.get("FANVUE_TOKENS_SECRET", "fanvue-oauth-tokens")
+    # Fanvue refresh tokens are SINGLE-USE + rotating, but Cloud Run runs many
+    # instances. Without coordination, two instances refresh the same token at
+    # once → the first rotates it, invalidating the token the others (and the
+    # persisted secret) still hold → the whole fleet gets 400 invalid_grant until
+    # a human re-auths. So on the "secret" backend a refresh runs under a
+    # cross-instance Firestore lock, re-reads the latest persisted token inside the
+    # lock (reusing a sibling's fresh token instead of rotating again), and retries
+    # once on 400/401 after reloading. See store.acquire_lock / fanvue_client._refresh.
+    FANVUE_REFRESH_LOCK_TTL = int(os.environ.get("FANVUE_REFRESH_LOCK_TTL", "30"))
+    FANVUE_REFRESH_LOCK_TRIES = int(os.environ.get("FANVUE_REFRESH_LOCK_TRIES", "20"))
+    FANVUE_REFRESH_LOCK_WAIT = float(os.environ.get("FANVUE_REFRESH_LOCK_WAIT", "0.5"))
 
     # Protects /simulate and /admin endpoints
     SIM_SECRET = os.environ.get("SIM_SECRET", "")

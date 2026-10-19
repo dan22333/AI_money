@@ -54,6 +54,11 @@ class FanvueClient:
         except Exception:
             # missing/empty/unreadable → unconfigured; stay not-ready, never crash
             self._tokens = {}
+        # Restore the ABSOLUTE access-token expiry from the persisted token so a
+        # freshly-booted (or re-reading) instance knows whether a sibling's access
+        # token is still valid, and won't needlessly rotate the single-use refresh
+        # token. 0.0 (unknown) → treated as expired, forcing a refresh.
+        self._access_expiry = float(self._tokens.get("access_expires_at") or 0.0)
 
     def _save_tokens(self):
         if self._use_secret():
@@ -72,10 +77,11 @@ class FanvueClient:
         return bool(self._tokens.get("refresh_token") or self._tokens.get("access_token"))
 
     # ---- access token lifecycle ----
-    def _refresh(self):
-        refresh_token = self._tokens.get("refresh_token")
-        if not refresh_token:
-            raise RuntimeError("No refresh token — run fanvue_auth.py first.")
+    TOKEN_REFRESH_LOCK = "fanvue_token_refresh"
+
+    def _token_request(self, refresh_token: str) -> dict:
+        """POST the refresh grant to Fanvue and return the new token JSON. Raises
+        httpx.HTTPStatusError on a non-2xx (400 invalid_grant = token is dead)."""
         basic = base64.b64encode(
             f"{settings.OAUTH_CLIENT_ID}:{settings.OAUTH_CLIENT_SECRET}".encode()
         ).decode()
@@ -85,11 +91,86 @@ class FanvueClient:
         }, headers={"Authorization": f"Basic {basic}",
                     "Content-Type": "application/x-www-form-urlencoded"}, timeout=30)
         r.raise_for_status()
-        tok = r.json()
-        # rotation: persist the NEW refresh token right away
+        return r.json()
+
+    def _apply_and_save(self, tok: dict):
+        """Adopt a fresh token response (rotates the refresh token) and persist it,
+        stamping the ABSOLUTE access expiry so every instance can later tell whether
+        this access token is still usable without refreshing again."""
         self._tokens.update(tok)
         self._access_expiry = time.time() + int(tok.get("expires_in", 3600)) - 60
+        self._tokens["access_expires_at"] = self._access_expiry
         self._save_tokens()
+
+    def _refresh(self):
+        """Trade the refresh token for a new access token.
+
+        File backend (local dev) = a single process, so just do it. Secret backend
+        (GCP, many Cloud Run instances) = refresh under a cross-instance lock,
+        because Fanvue refresh tokens are single-use + rotating: two instances
+        refreshing at once would invalidate each other's token and lock out the
+        whole fleet. Inside the lock we RE-READ the latest persisted token first —
+        if a sibling already refreshed, we reuse its still-valid access token
+        instead of rotating again."""
+        if not self._use_secret():
+            refresh_token = self._tokens.get("refresh_token")
+            if not refresh_token:
+                raise RuntimeError("No refresh token — run fanvue_auth.py first.")
+            self._apply_and_save(self._token_request(refresh_token))
+            return
+        self._refresh_coordinated()
+
+    def _refresh_coordinated(self):
+        import uuid
+
+        import store
+        owner = uuid.uuid4().hex
+        with store.namespace("real"):  # one lock for the whole fleet, not per-DB
+            acquired = False
+            for _ in range(settings.FANVUE_REFRESH_LOCK_TRIES):
+                acquired = store.acquire_lock(
+                    self.TOKEN_REFRESH_LOCK, owner, settings.FANVUE_REFRESH_LOCK_TTL)
+                if acquired:
+                    break
+                # Another instance is refreshing. Wait, then re-read what it persists;
+                # the moment a valid access token lands we can stop waiting.
+                time.sleep(settings.FANVUE_REFRESH_LOCK_WAIT)
+                self._load_tokens()
+                if self._tokens.get("access_token") and time.time() < self._access_expiry:
+                    return
+            if not acquired:
+                # Couldn't win the lock in time. Fall back to the latest persisted
+                # token; raise only if there's genuinely nothing usable.
+                self._load_tokens()
+                if not self._tokens.get("access_token"):
+                    raise RuntimeError("Fanvue token refresh is busy and no cached access token is available.")
+                return
+            try:
+                # Inside the lock: re-read the latest token. A sibling may have
+                # rotated it between our stale read and acquiring the lock.
+                self._load_tokens()
+                if self._tokens.get("access_token") and time.time() < self._access_expiry:
+                    return  # sibling already refreshed — reuse, don't rotate again
+                refresh_token = self._tokens.get("refresh_token")
+                if not refresh_token:
+                    raise RuntimeError("No refresh token — run fanvue_auth.py first.")
+                try:
+                    tok = self._token_request(refresh_token)
+                except httpx.HTTPStatusError as e:
+                    # 400/401 can mean our refresh token lost a rotation race. Reload
+                    # the latest persisted token ONCE and retry with it before failing.
+                    if e.response is not None and e.response.status_code in (400, 401):
+                        self._load_tokens()
+                        latest = self._tokens.get("refresh_token")
+                        if latest and latest != refresh_token:
+                            tok = self._token_request(latest)
+                        else:
+                            raise
+                    else:
+                        raise
+                self._apply_and_save(tok)
+            finally:
+                store.release_lock(self.TOKEN_REFRESH_LOCK, owner)
 
     def _access_token(self) -> str:
         if not self._tokens.get("access_token") or time.time() >= self._access_expiry:

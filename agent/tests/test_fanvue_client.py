@@ -141,3 +141,65 @@ def test_rotation_writes_new_secret_version(monkeypatch):
     assert len(calls["added"]) == 1               # persisted as a NEW secret version
     written = json.loads(calls["added"][0]["data"].decode())
     assert written["refresh_token"] == "r1" and written["access_token"] == "a1"
+    assert written["access_expires_at"] > 0       # absolute expiry stamped for siblings
+
+
+def test_reuses_sibling_token_instead_of_rotating(monkeypatch):
+    """Multi-instance race guard: if this instance's in-memory access token is
+    expired but a SIBLING has already refreshed and persisted a still-valid token,
+    the coordinated refresh must re-read it under the lock and reuse it — NOT burn
+    the single-use refresh token with another rotation."""
+    monkeypatch.setattr(settings, "FANVUE_TOKENS_SOURCE", "secret")
+    monkeypatch.setattr(settings, "GCP_PROJECT", "test-proj")
+    # the persisted secret already holds a fresh token (far-future absolute expiry)
+    _install_fake_secretmanager(monkeypatch, stored={
+        "refresh_token": "r9", "access_token": "a9", "access_expires_at": 9_999_999_999})
+
+    def boom_post(*a, **k):
+        raise AssertionError("must not hit the token endpoint — sibling already refreshed")
+    monkeypatch.setattr(fanvue_client.httpx, "post", boom_post)
+
+    c = _fresh_client()
+    monkeypatch.setattr(c, "_use_secret", lambda: True)
+    c._tokens = {"access_token": "a_old", "refresh_token": "r_old"}
+    c._access_expiry = 0.0                         # our copy looks expired
+
+    assert c._access_token() == "a9"               # re-read sibling's token, no rotation
+
+
+def test_retries_once_on_400_after_reloading_rotated_token(monkeypatch):
+    """If our refresh token lost a rotation race (400 invalid_grant), the coordinated
+    refresh must reload the latest persisted token ONCE and retry with it before
+    giving up — this is exactly the lockout that bricked prod."""
+    monkeypatch.setattr(settings, "FANVUE_TOKENS_SOURCE", "secret")
+
+    c = _fresh_client()
+    monkeypatch.setattr(c, "_use_secret", lambda: True)
+    c._tokens = {"refresh_token": "r_stale"}
+    c._access_expiry = 0.0
+
+    loads = {"n": 0}
+
+    def fake_load():
+        loads["n"] += 1
+        # 1st (re-read under lock) = still stale; 2nd (400 handler) = sibling rotated
+        c._tokens = {"refresh_token": "r_stale" if loads["n"] == 1 else "r_new"}
+        c._access_expiry = 0.0
+    monkeypatch.setattr(c, "_load_tokens", fake_load)
+
+    requested = []
+
+    def fake_request(rt):
+        requested.append(rt)
+        if rt == "r_stale":
+            resp = types.SimpleNamespace(status_code=400)
+            raise fanvue_client.httpx.HTTPStatusError("400", request=None, response=resp)
+        return {"access_token": "a2", "refresh_token": "r2", "expires_in": 3600}
+    monkeypatch.setattr(c, "_token_request", fake_request)
+
+    saved = []
+    monkeypatch.setattr(c, "_save_tokens", lambda: saved.append(dict(c._tokens)))
+
+    assert c._access_token() == "a2"
+    assert requested == ["r_stale", "r_new"]       # retried with the reloaded token
+    assert saved and saved[0]["refresh_token"] == "r2"
