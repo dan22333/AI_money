@@ -90,6 +90,23 @@ def test_pg_connection_string_tcp_host(monkeypatch):
     assert memory._pg_connection_string() == "postgresql://postgres:secret@127.0.0.1:5432/jenny"
 
 
+def test_sim_namespace_routes_to_staging_database(monkeypatch):
+    """Data isolation: the `sim` namespace's mem0 client points at the STAGING
+    database (own schema → migrations rehearsable), `real` at the prod database —
+    on the same instance. Mirrors Firestore's prod/staging DB split."""
+    monkeypatch.setattr(settings, "PG_HOST", "/cloudsql/proj:us-central1:jenny-pg")
+    monkeypatch.setattr(settings, "PG_USER", "postgres")
+    monkeypatch.setattr(settings, "PG_PASSWORD", "secret")
+    monkeypatch.setattr(settings, "PG_DB", "jenny")
+    monkeypatch.setattr(settings, "PG_DB_STAGING", "jenny_staging")
+    assert memory._db_for("real") == "jenny"
+    assert memory._db_for("sim") == "jenny_staging"
+    real = memory._mem0_config(memory._collection_for("real"), memory._db_for("real"))["vector_store"]["config"]
+    sim = memory._mem0_config(memory._collection_for("sim"), memory._db_for("sim"))["vector_store"]["config"]
+    assert real["dbname"] == "jenny" and "@/jenny?host=" in real["connection_string"]
+    assert sim["dbname"] == "jenny_staging" and "@/jenny_staging?host=" in sim["connection_string"]
+
+
 def test_backfill_stops_at_first_failed_chunk(monkeypatch):
     """backfill reports how far it got and STOPS on the first failing chunk, so
     the caller's watermark can't skip facts that never landed in mem0."""

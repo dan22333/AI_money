@@ -52,6 +52,12 @@ class Settings:
     # Cloud Run reaches Cloud SQL over a unix socket at /cloudsql/<connection-name>.
     PG_HOST = os.environ.get("PG_HOST", f"/cloudsql/{PG_INSTANCE}")
     PG_DB = os.environ.get("PG_DB", "jenny")
+    # Separate staging DATABASE on the SAME instance for sim: traffic — isolates
+    # test memories AND schema/migrations from prod (mirrors Firestore's staging DB).
+    # The `sim` namespace's mem0 client connects here; `real` uses PG_DB. A separate
+    # *instance* (full server isolation) is the later upgrade and needs only this
+    # name repointed. See memory._db_for.
+    PG_DB_STAGING = os.environ.get("PG_DB_STAGING", "jenny_staging")
     PG_USER = os.environ.get("PG_USER", "postgres")
     PG_PASSWORD = os.environ.get("PG_PASSWORD", "")
     EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-004")
