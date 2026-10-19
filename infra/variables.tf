@@ -36,3 +36,9 @@ variable "reconcile_sim_secret" {
     NOT commit it. If left empty the scheduler job is not created.
   EOT
 }
+
+variable "alert_email" {
+  type        = string
+  default     = "daniel_nurieli@alumni.brown.edu"
+  description = "Email that Cloud Monitoring alert policies notify."
+}

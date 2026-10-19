@@ -76,6 +76,11 @@ jobs:
           export PG_PASSWORD="$(gcloud secrets versions access latest --secret=jenny-pg-password --project "$PROJECT")"
           echo "== alembic upgrade head on jenny_staging =="
           uv run alembic upgrade head
+          # Reversibility rehearsal (staging only): prove the newest migration's
+          # downgrade() actually works, then re-apply — so a real rollback won't
+          # hit a broken/missing downgrade. Skipped gracefully if already at base.
+          echo "== verify downgrade/upgrade round-trips on jenny_staging =="
+          uv run alembic downgrade -1 && uv run alembic upgrade head
           kill $PROXY_PID 2>/dev/null || true
 
   # 2) Deploy the new revision with 0% traffic + a `candidate` preview tag.
