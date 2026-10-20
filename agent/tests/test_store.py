@@ -31,6 +31,31 @@ def test_named_lock_expires_so_a_dead_holder_cannot_wedge_it():
     store.release_lock("L2", "live")
 
 
+def test_pending_offer_tracked_and_cleared_on_purchase():
+    fan = "sim:po"
+    store.add_pending_offer(fan, "m1", 5000, "spicy")
+    store.add_pending_offer(fan, "m2", 3000, "")
+    assert {o["mediaUuid"] for o in store.list_pending_offers(fan)} == {"m1", "m2"}
+    # paying for m1 clears ONLY m1 (and marks it purchased)
+    store.add_purchase(fan, "inv1", gross_cents=5000, source="ppv", media_uuids=["m1"])
+    assert {o["mediaUuid"] for o in store.list_pending_offers(fan)} == {"m2"}
+    assert "m1" in store.purchased_uuids(fan)
+
+
+def test_add_pending_offer_dedupes_same_media():
+    fan = "sim:po2"
+    store.add_pending_offer(fan, "m1", 5000, "a")
+    store.add_pending_offer(fan, "m1", 5000, "b")      # re-offer same item
+    assert len(store.list_pending_offers(fan)) == 1    # not duplicated
+
+
+def test_bump_recall_turn_increments():
+    fan = "sim:rt"
+    assert store.bump_recall_turn(fan) == 1
+    assert store.bump_recall_turn(fan) == 2
+    assert store.bump_recall_turn(fan) == 3
+
+
 def test_heat_gate_excludes_too_hot():
     _seed()
     warm = {i["mediaUuid"] for i in store.eligible_media("sim:f", "WARM")}

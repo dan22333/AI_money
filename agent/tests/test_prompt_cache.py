@@ -56,3 +56,16 @@ def test_prefix_is_stable_across_fans(monkeypatch):
     assert "Mike" in a[1].content          # remembered fact surfaced for A only
     assert "Mike" not in b[1].content
     assert a[1].content != b[1].content
+
+
+def test_pending_offers_note_surfaces_locked_ppvs():
+    """Jenny's per-fan context must flag LOCKED/unpaid PPVs so she doesn't assume
+    the fan has seen them; empty string when there are none (no noise)."""
+    assert graph._pending_offers_note([]) == ""
+    note = graph._pending_offers_note([{"mediaUuid": "m1", "priceCents": 5000}])
+    assert "AWAITING PAYMENT" in note and "$50" in note
+    # the per-fan pending DATA rides in the dynamic context, never the cached prefix
+    # (the generic "PAID CONTENT IS LOCKED" *instruction* may live in the prefix).
+    assert "AWAITING PAYMENT" not in graph.SYSTEM_PREFIX
+    ctx = graph._dynamic_context("p", "f", "s", "EXPLICIT", [{"mediaUuid": "m1", "priceCents": 5000}])
+    assert "AWAITING PAYMENT" in ctx

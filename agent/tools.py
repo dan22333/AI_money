@@ -102,8 +102,9 @@ def offer_content(theme: str, caption: str) -> str:
     ctx["outbox"].append({"type": "ppv", "mediaUuid": item["mediaUuid"],
                           "price_cents": price, "caption": caption})
     _send(caption, media_uuids=[item["mediaUuid"]], price_cents=price)
-    # 6. record
+    # 6. record — offered (cooldown) + pending/unpaid (locked until the fan pays)
     store.record_offer(fan_id, item["mediaUuid"])
+    store.add_pending_offer(fan_id, item["mediaUuid"], price, caption)
     return f"sent::{item['description']}::${price/100:.2f}"
 
 
@@ -132,6 +133,8 @@ def offer_bundle(theme: str, caption: str) -> str:
                           "caption": caption})
     _send(caption, media_uuids=offer["items"], price_cents=offer["price_cents"])
     store.record_offer(fan_id, offer["items"])  # record ALL members so none re-offered
+    for u in offer["items"]:                     # each member is locked until paid
+        store.add_pending_offer(fan_id, u, offer["price_cents"], caption)
     return f"sent::{offer['title']}::${offer['price_cents']/100:.2f}::{len(offer['items'])}"
 
 

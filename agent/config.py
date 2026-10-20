@@ -91,8 +91,11 @@ class Settings:
     # Recall strategy for the live agent (compare them read-only via /admin/recall_eval
     # before switching). "latest" = embed the last message only (legacy, default);
     # "context" = embed the last RECALL_CONTEXT_TURNS turns; "expanded" = a cheap LLM
-    # turns the context into general probes, then search on those (+1 fast call).
+    # turns the context into general probes, then search on those (+1 fast call);
+    # "adaptive" = "context" on most turns, "expanded" every RECALL_EXPAND_EVERY turns
+    # (rich recall periodically without paying the expansion latency every message).
     RECALL_STRATEGY = os.environ.get("RECALL_STRATEGY", "latest")
+    RECALL_EXPAND_EVERY = int(os.environ.get("RECALL_EXPAND_EVERY", "5"))
     RECALL_CONTEXT_TURNS = int(os.environ.get("RECALL_CONTEXT_TURNS", "4"))
     RECALL_EXPANSION_PROBES = int(os.environ.get("RECALL_EXPANSION_PROBES", "3"))
     # "expanded": each probe fetches up to RECALL_LIMIT facts (searched sequentially —

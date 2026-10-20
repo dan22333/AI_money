@@ -128,12 +128,11 @@ jobs:
           # Memory scaling — LIVE (2026-10-19, after the db-g1-small tier bump + queue apply):
           # HNSW index + pgvector pool sizing, extraction fan-out onto jenny-extract, and
           # expanded recall (multi-probe memory lookup) when composing replies.
-          # RECALL_STRATEGY=context (was expanded): expanded did an extra LLM query-
-          # expansion call + several embeddings + several vector searches per reply
-          # (~2-4s). `context` builds one query from recent turns → one embed → one
-          # search: much faster, still context-aware. Flip back to expanded if recall
-          # quality matters more than latency.
-          ENVS="${ENVS},MEMORY_USE_HNSW=true,MEMORY_PG_MINCONN=1,MEMORY_PG_MAXCONN=5,MEMORY_FANOUT_ENABLED=true,EXTRACT_TASKS_QUEUE=jenny-extract,RECALL_STRATEGY=context"
+          # RECALL_STRATEGY=adaptive: cheap `context` recall (one embed+search) on MOST
+          # turns, the heavier `expanded` (LLM query-expansion + multi-probe) only every
+          # RECALL_EXPAND_EVERY turns — rich recall periodically without paying its
+          # ~2-4s latency every message. (expanded-every-turn was the main latency cost.)
+          ENVS="${ENVS},MEMORY_USE_HNSW=true,MEMORY_PG_MINCONN=1,MEMORY_PG_MAXCONN=5,MEMORY_FANOUT_ENABLED=true,EXTRACT_TASKS_QUEUE=jenny-extract,RECALL_STRATEGY=adaptive,RECALL_EXPAND_EVERY=5"
           if gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
             NO_TRAFFIC="--no-traffic"
             echo "Service exists → candidate at 0% traffic."
