@@ -322,16 +322,27 @@ class FanvueClient:
         except Exception:
             return r.status_code, {"_text": r.text[:500]}
 
+    # Fanvue's minimum pay-to-view price (cents). The API rejects a lower non-zero
+    # price with a 400, so we clamp up to it rather than let a send fail.
+    PPV_MIN_PRICE_CENTS = 300
+
     def send_message(self, user_uuid: str, text: str,
                      media_uuids: Optional[List[str]] = None,
                      price_cents: Optional[int] = None) -> dict:
+        """POST a chat message. Body contract (verified against Fanvue API docs
+        2026-10-20, api.fanvue.com/docs/api-reference/send-a-message):
+          {text, mediaUuids:[uuid], price:cents}
+        - the media field is `mediaUuids` (an ARRAY), NOT `media` — the old `media`
+          key was silently ignored, so attachments never reached the fan.
+        - `price` (cents) makes the media pay-to-view; minimum 300 — a lower non-zero
+          price 400s, so we clamp. Price requires mediaUuids.
+        - the attached media must already be status:"ready" on Fanvue.
+        Endpoint is SINGULAR /message (plural /messages is GET-only → 404 on POST)."""
         body: dict = {"text": text}
         if media_uuids:
-            body["media"] = media_uuids  # Fanvue field is `media` (uuid list)
-        if price_cents:
-            body["price"] = price_cents  # cents; makes it pay-to-view
-        # Send endpoint is SINGULAR /message (verified live: 201). The plural
-        # /messages path is read-only (GET) and 404s on POST.
+            body["mediaUuids"] = media_uuids  # ARRAY; Fanvue's field is `mediaUuids`
+            if price_cents:
+                body["price"] = max(int(price_cents), self.PPV_MIN_PRICE_CENTS)
         r = httpx.post(f"{settings.FANVUE_API_BASE}/v1/chats/{user_uuid}/message",
                        headers=self._headers(), json=body, timeout=30)
         r.raise_for_status()

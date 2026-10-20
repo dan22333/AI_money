@@ -42,20 +42,25 @@ PERSONA = _load_persona()
 # it goes in a SECOND system message AFTER the cached block. Never interpolate
 # anything per-fan into SYSTEM_PREFIX or the cache breaks.
 OPERATING_INSTRUCTIONS = (
-    "To send a free teaser use send_teaser(theme, caption). To sell a single paid item use "
-    "offer_content(theme, caption). To sell a themed PACKAGE of several items under one price "
-    "(e.g. a 'girls night out' set) use offer_bundle(theme, caption). The selling tools decide "
-    "if/what/price — you just give the vibe + caption. "
-    "CRITICAL — SENDING MEDIA: a photo or video reaches the fan ONLY when you actually CALL "
-    "send_teaser / offer_content / offer_bundle. The words in your message do NOT attach media. "
-    "So NEVER write things like 'here's a photo', 'sent you something', 'check your DMs', or imply "
-    "you sent a pic unless you called one of those tools THIS turn. When the fan asks for a photo "
-    "and you want to send one, CALL the tool — do not describe or promise a send without calling it. "
+    "SENDING PHOTOS/VIDEOS: your context has a 'YOU CAN SEND NOW' menu listing the exact items "
+    "you may send this turn, each with a short id (m1, m2, …), a description, and whether it's a "
+    "FREE teaser or a paid PPV at a price. To send one, call send_media(media_id, caption) with "
+    "an id FROM THAT MENU and your own caption. The system attaches the real file and sets the "
+    "price — you only choose which id + what to say. Pick the id whose description actually matches "
+    "what you're describing; never invent a photo that isn't on the menu. If the menu is EMPTY you "
+    "have nothing to send right now. "
+    "CRITICAL — a photo reaches the fan ONLY when you actually CALL send_media THIS turn. The words "
+    "in your message do NOT attach media. So NEVER write 'here's a photo', 'sent you something', "
+    "'check your DMs', or imply you sent a pic unless you called send_media this turn with a real "
+    "menu id and it returned 'sent'. When the fan asks for a pic and you want to send one, CALL "
+    "send_media — do not describe or promise a send without calling it. "
     "Don't repeat the same line or fantasy back to back — move the conversation forward. "
     "Save new facts with save_fact. "
-    "TEXTING STYLE: write like a real person texting — short, casual, lowercase is fine, a little "
-    "imperfect. Do NOT sound like an AI or an assistant: no over-explaining, no lists, no overly "
-    "polished or formal sentences, no 'As an...'. One or two short lines is plenty. "
+    "TEXTING STYLE: write like a real person thumb-typing — short, casual, lowercase is fine, a "
+    "little imperfect. Do NOT sound like an AI or an assistant: no over-explaining, no lists, no "
+    "overly polished or formal sentences, no 'As an...'. NEVER use em-dashes (—) or the "
+    "'not only X but also Y' construction, don't wrap up with a neat summary line, and don't make "
+    "every sentence grammatically perfect — real texts are a bit loose. One or two short lines is plenty. "
     "EMOJIS: use them RARELY — MOST messages should have NONE; at most ONE, only when it genuinely "
     "fits a moment. Never put an emoji in every message and never end every message with one. "
     "PAID CONTENT IS LOCKED: a PPV you send stays LOCKED until the fan pays for it. NEVER assume "
@@ -77,7 +82,26 @@ def _pending_offers_note(pending: list) -> str:
             f"Do not assume they've seen them — nudge to unlock; celebrate only once paid.")
 
 
-def _dynamic_context(profile: str, facts: str, summary: str, mode: str, pending: list | None = None) -> str:
+def _sendable_menu_note(menu: dict) -> str:
+    """Render the per-turn 'what Jenny may send right now' menu (store.sendable_menu)
+    so the agent chooses from REAL inventory by id instead of blind-guessing a theme.
+    Empty menu → an explicit 'nothing to send' line so she never promises a phantom pic."""
+    if not menu:
+        return ("\n\n--- YOU CAN SEND NOW ---\n"
+                "(nothing available to send right now — do not claim or promise a photo)")
+    lines = []
+    for e in sorted(menu.values(), key=lambda x: x["id"]):
+        if e["price_cents"] > 0:
+            items = f", {len(e['media_uuids'])} items" if len(e["media_uuids"]) > 1 else ""
+            tag = f"PPV ${e['price_cents']/100:.0f}{items}"
+        else:
+            tag = "FREE teaser"
+        lines.append(f"  {e['id']} · {e['desc']} — {tag}")
+    return ("\n\n--- YOU CAN SEND NOW (send_media with the id) ---\n" + "\n".join(lines))
+
+
+def _dynamic_context(profile: str, facts: str, summary: str, mode: str,
+                     pending: list | None = None, menu: dict | None = None) -> str:
     """The per-fan tail — everything that changes per request lives here, never
     in SYSTEM_PREFIX, so the cached prefix stays byte-identical."""
     return (
@@ -86,6 +110,7 @@ def _dynamic_context(profile: str, facts: str, summary: str, mode: str, pending:
         + "\n\n--- STORY SO FAR ---\n" + summary
         + "\n\n--- MODE ---\n" + modes.mode_directive(mode)
         + _pending_offers_note(pending or [])
+        + _sendable_menu_note(menu or {})
     )
 
 
@@ -163,8 +188,13 @@ def load_context(state: State) -> dict:
         facts = f_facts.result()
     mode, monetize_ok = verdict["mode"], verdict["monetize_ok"]
 
-    # tools read mode/monetize from the request context
-    tools.update_context(mode=mode, monetize_ok=monetize_ok, session_id=state["session_id"])
+    # Build the per-turn sendable menu (deterministic: real inventory the fan can be
+    # shown NOW, filtered by mode/monetize/cooldown, purchased + already-offered items
+    # excluded). The agent picks an id from it instead of guessing a theme.
+    menu = store.sendable_menu(fan_id, mode, monetize_ok=monetize_ok)
+    # tools read mode/monetize/menu from the request context
+    tools.update_context(mode=mode, monetize_ok=monetize_ok,
+                         session_id=state["session_id"], menu=menu)
     profile = (f"joined={fan.get('subscriptionStatus')} · spentCents={fan.get('totalSpendCents',0)} "
                f"· tier={fan.get('tier')} · purchases={fan.get('purchaseCount',0)}")
     summary = fan.get("rollingSummary") or "(none yet)"
@@ -173,7 +203,7 @@ def load_context(state: State) -> dict:
     msgs: list = [
         SystemMessage(content=SYSTEM_PREFIX),
         SystemMessage(content=_dynamic_context(profile, facts, summary, mode,
-                                               fan.get("pendingOffers"))),
+                                               fan.get("pendingOffers"), menu)),
     ]
     for m in history:
         msgs.append(HumanMessage(content=m["text"]) if m["role"] == "fan"

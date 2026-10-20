@@ -1,7 +1,9 @@
 """Intimacy-mode classifier — a fast, cheap, permissive model call, every turn.
 
-Modes: COLD < WARM < FLIRTY < EXPLICIT. Escalates only as fast as the fan;
-de-escalates when they cool. A new session resets the baseline (handled in graph.ingest).
+Modes: COLD < WARM < FLIRTY < EXPLICIT. Matches the fan's energy and may jump
+STRAIGHT to EXPLICIT in one message when the fan is overtly sexual (no one-step
+limit); de-escalates when they cool. A new session resets the baseline (handled in
+graph.ingest).
 """
 from __future__ import annotations
 
@@ -21,9 +23,15 @@ Modes (heat):
   EXPLICIT - fan is being sexual/explicit; explicit language & NSFW allowed.
 
 Rules:
-- Escalate ONLY as fast as the FAN does. Never jump ahead of the fan.
-- De-escalate if the fan cools, gets shy, or switches to a casual topic.
-- Move at most one step per message.
+- Match the FAN's energy. Never push ahead of the fan, but DO meet them where they are.
+- You may jump MULTIPLE levels in a single message — there is NO one-step-at-a-time limit.
+  If the fan's latest message is overtly sexual/explicit (describes sex acts, uses explicit
+  sexual language, asks for nudes/sexual content, talks about fucking/cumming/etc.), go
+  STRAIGHT to EXPLICIT this turn, even from COLD/WARM. Do not crawl up one step.
+- Otherwise escalate smoothly as the fan warms (WARM→FLIRTY as flirting starts).
+- De-escalate if the fan cools, gets shy, or switches to a casual/non-sexual topic.
+- monetize_ok=true only when the fan is engaged AND at FLIRTY or EXPLICIT (a good moment to
+  offer paid content); false in COLD/WARM or when the fan seems put off.
 Respond with ONLY compact JSON:
 {"mode":"...","escalate_ok":bool,"monetize_ok":bool,"reason":"short"}"""
 

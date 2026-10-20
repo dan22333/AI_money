@@ -905,6 +905,58 @@ def best_bundle_offer(fan_id: str, mode: str, theme: str = "") -> Optional[dict]
             "items": unowned, "price_cents": bundle_price(b, unowned)}
 
 
+def eligible_bundles(fan_id: str, mode: str) -> List[dict]:
+    """All bundles the fan can be offered right now (heat ≤ mode, not fully owned,
+    not fully already-offered), each priced for its UNOWNED subset. Unlike
+    best_bundle_offer this returns every match (no theme ranking) — used to build the
+    sendable menu. Returns [{bundleId,title,items(unowned),price_cents}]."""
+    fan = get_fan(fan_id)
+    level = MODE_LEVEL.get(mode, 1)
+    bought = set(fan.get("purchasedUuids", []))
+    offered = set(fan.get("recentlyOfferedUuids", []))
+    out = []
+    for b in _backend().list(BUNDLES):
+        if b.get("status") != "ready" or b.get("heat", 1) > level:
+            continue
+        unowned = [m for m in b.get("items", []) if m not in bought]
+        if not unowned or all(m in offered for m in unowned):
+            continue
+        out.append({"bundleId": b["bundleId"], "title": b.get("title", b["bundleId"]),
+                    "items": unowned, "price_cents": bundle_price(b, unowned)})
+    return out
+
+
+def sendable_menu(fan_id: str, mode: str, *, monetize_ok: bool, limit: int = 8) -> dict:
+    """Deterministic 'what Jenny may send RIGHT NOW' menu for the prompt — so the
+    agent chooses from REAL inventory instead of blind-guessing a theme (and writing
+    captions for files that don't exist). Free teasers are always offered (eligible
+    heat, unowned, not already shown); paid singles + bundles appear ONLY when selling
+    is open (mode ≥ FLIRTY, monetize_ok, not in cooldown). Each entry gets a short
+    stable id (m1, m2, …); returns {id: entry} where entry =
+    {id,kind,desc,price_cents,media_uuids}. The tool resolves the id back to the real
+    media uuids + price, so the agent never sees or sets a price."""
+    entries: List[dict] = []
+    for it in eligible_media(fan_id, mode, "", paid_only=False):
+        if it.get("suggestedPriceCents", 0) == 0:
+            entries.append({"kind": "teaser", "desc": it["description"],
+                            "price_cents": 0, "media_uuids": [it["mediaUuid"]]})
+    selling_open = (MODE_LEVEL.get(mode, 1) >= MODE_LEVEL["FLIRTY"]
+                    and monetize_ok and not cooldown_active(fan_id))
+    if selling_open:
+        for it in eligible_media(fan_id, mode, "", paid_only=True):
+            entries.append({"kind": "ppv", "desc": it["description"],
+                            "price_cents": it.get("suggestedPriceCents") or settings.DEFAULT_PPV_PRICE_CENTS,
+                            "media_uuids": [it["mediaUuid"]]})
+        for b in eligible_bundles(fan_id, mode):
+            entries.append({"kind": "bundle", "desc": b["title"],
+                            "price_cents": b["price_cents"], "media_uuids": b["items"]})
+    menu: dict = {}
+    for i, e in enumerate(entries[:limit], 1):
+        e["id"] = f"m{i}"
+        menu[e["id"]] = e
+    return menu
+
+
 # ---------------- cooldown / offers ----------------
 def cooldown_active(fan_id: str) -> bool:
     fan = get_fan(fan_id)
@@ -917,9 +969,12 @@ def cooldown_active(fan_id: str) -> bool:
     return False
 
 
-def record_offer(fan_id: str, media_uuids) -> None:
-    """Record one or more media as offered (so they're not re-offered) and bump the
-    per-session offer counter / PPV cooldown once.
+def record_offer(fan_id: str, media_uuids, *, counts_toward_cooldown: bool = True) -> None:
+    """Record one or more media as offered (so they're not re-offered) and — for PAID
+    sends — bump the per-session offer counter / PPV cooldown once. A FREE teaser
+    passes counts_toward_cooldown=False: it still marks the item as shown, but must
+    NOT consume the paid-offer budget (that was a bug — free teasers ate the PPV
+    cooldown and blocked real selling).
 
     KNOWN LIMITATION (same-fan race): the check (cooldown_active in tools) and
     this write are a non-transactional read-modify-write on the fan doc. Two
@@ -934,8 +989,9 @@ def record_offer(fan_id: str, media_uuids) -> None:
     for u in media_uuids:
         if u not in ro:
             ro.append(u)
-    fan["lastPpvAt"] = _now().isoformat()
-    fan["offersThisSession"] = fan.get("offersThisSession", 0) + 1
+    if counts_toward_cooldown:
+        fan["lastPpvAt"] = _now().isoformat()
+        fan["offersThisSession"] = fan.get("offersThisSession", 0) + 1
     save_fan(fan)
 
 

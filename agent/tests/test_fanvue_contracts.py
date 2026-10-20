@@ -72,6 +72,7 @@ def test_send_message_body_contract(monkeypatch):
     monkeypatch.setattr(fanvue_client.fanvue, "_access_token", lambda: "tok-123")
 
     fanvue_client.fanvue.send_message("user-9", "come see 😏", media_uuids=["m1"], price_cents=1500)
-    assert captured["json"] == {"text": "come see 😏", "media": ["m1"], "price": 1500}
+    # Fanvue's field is `mediaUuids` (array), not `media`; price is cents (min 300).
+    assert captured["json"] == {"text": "come see 😏", "mediaUuids": ["m1"], "price": 1500}
     assert captured["url"].endswith("/v1/chats/user-9/message")
     assert captured["headers"]["Authorization"] == "Bearer tok-123"

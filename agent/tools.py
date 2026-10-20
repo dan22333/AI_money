@@ -12,7 +12,6 @@ from langchain_core.tools import tool
 
 import memory
 import store
-from config import settings
 from fanvue_client import fanvue
 
 # per-request context the deterministic tools read
@@ -21,7 +20,8 @@ _ctx: contextvars.ContextVar[dict] = contextvars.ContextVar("req_ctx", default={
 
 def set_context(fan_id: str, user_uuid: str, dry_run: bool = False) -> dict:
     ctx = {"fan_id": fan_id, "user_uuid": user_uuid, "dry_run": dry_run,
-           "mode": "COLD", "monetize_ok": False, "session_id": "", "outbox": []}
+           "mode": "COLD", "monetize_ok": False, "session_id": "", "outbox": [],
+           "menu": {}}  # id -> sendable entry, built per-turn in graph.load_context
     _ctx.set(ctx)
     return ctx
 
@@ -36,10 +36,43 @@ def get_outbox() -> list:
 
 
 def _send(text, media_uuids=None, price_cents=0):
+    """Deliver a media message to Fanvue. Returns the send response dict on success
+    ({} for sim/dry-run, which count as delivered), or None on a delivery FAILURE.
+
+    Failures are NOT swallowed: we log the same `[send]` marker the alerts watch and
+    return None so the calling tool reports 'send_failed' instead of pretending a
+    photo went out. (Previously an exception here was eaten by the ToolNode and the
+    plain text reply still sent — so the fan got words, no media, and we never knew.)"""
     ctx = _ctx.get()
-    if not ctx.get("dry_run") and fanvue.ready:
-        fanvue.send_message(ctx["user_uuid"], text, media_uuids=media_uuids,
-                            price_cents=price_cents or None)
+    if ctx.get("dry_run") or not fanvue.ready:
+        return {}
+    try:
+        return fanvue.send_message(ctx["user_uuid"], text, media_uuids=media_uuids,
+                                   price_cents=price_cents or None)
+    except Exception as e:
+        print(f"[send] media delivery to Fanvue failed: {type(e).__name__}: {e}")
+        return None
+
+
+def _persist_sent_media(text, media_uuids, price_cents, resp) -> None:
+    """Record the media message we just sent on the fan's transcript (so sends are
+    auditable — previously mediaUuids/price were never stored). Keyed by the
+    messageUuid Fanvue returns when present (idempotent vs. the reconcile re-pull),
+    else a random-id append."""
+    ctx = _ctx.get()
+    fan_id = ctx["fan_id"]
+    muid = ""
+    if isinstance(resp, dict):
+        m = resp.get("message") if isinstance(resp.get("message"), dict) else {}
+        muid = str(resp.get("uuid") or resp.get("messageUuid") or m.get("uuid") or "")
+    if muid:
+        store.upsert_message(fan_id, muid, "jenny", text, media_uuids=media_uuids,
+                             price_cents=price_cents, mode=ctx.get("mode", ""),
+                             session_id=ctx.get("session_id", ""))
+    else:
+        store.save_message(fan_id, "jenny", text, media_uuids=media_uuids,
+                           price_cents=price_cents, mode=ctx.get("mode", ""),
+                           session_id=ctx.get("session_id", ""))
 
 
 @tool
@@ -60,82 +93,40 @@ def save_fact(fact: str) -> str:
 
 
 @tool
-def send_teaser(theme: str, caption: str) -> str:
-    """Send a FREE teaser photo/video that fits `theme` (e.g. 'gym selfie', 'beach').
-    You give the vibe + caption; the system picks an appropriate, not-already-seen item.
-    Returns 'sent::<desc>' or 'nothing' if there's nothing suitable."""
+def send_media(media_id: str, caption: str) -> str:
+    """Send a photo/video from the "YOU CAN SEND NOW" menu in your context. Pass the
+    menu id (e.g. 'm2') plus your caption. ONLY use ids that appear in the menu THIS
+    turn — the menu is the single source of truth for what exists and what you may
+    send right now. The system attaches the real file, sets the price (free teaser vs
+    paid PPV) and delivers it — you never pick the file or the price yourself, just the
+    id + caption. If the menu is empty you have nothing to send; don't claim you did.
+    Returns 'sent::<desc>[::<price>]' | 'unavailable' (id not on the menu / selling not
+    open yet) | 'send_failed' (delivery error)."""
     ctx = _ctx.get()
-    items = store.eligible_media(ctx["fan_id"], ctx["mode"], theme, paid_only=False)
-    items = [i for i in items if i.get("suggestedPriceCents", 0) == 0]
-    if not items:
-        return "nothing"
-    item = items[0]
-    ctx["outbox"].append({"type": "teaser", "mediaUuid": item["mediaUuid"], "caption": caption})
-    _send(caption, media_uuids=[item["mediaUuid"]], price_cents=0)
-    store.record_offer(ctx["fan_id"], item["mediaUuid"])
-    return f"sent::{item['description']}"
-
-
-@tool
-def offer_content(theme: str, caption: str) -> str:
-    """Attempt to sell paid (PPV) content that fits `theme`. You give the vibe + caption;
-    the system deterministically checks timing, cooldown, and what's unsold, then either
-    sends the best item at its price or declines.
-    Returns: 'sent::<desc>::<price>' | 'nothing' (no unsold fit) | 'not_now' (bad timing)."""
-    ctx = _ctx.get()
-    fan_id, mode = ctx["fan_id"], ctx["mode"]
-    # 1. timing gate
-    if store.MODE_LEVEL.get(mode, 1) < store.MODE_LEVEL["FLIRTY"]:
-        return "not_now"
-    if not ctx.get("monetize_ok"):
-        return "not_now"
-    if store.cooldown_active(fan_id):
-        return "not_now"
-    # 2. eligible, unsold, appropriate paid items
-    items = store.eligible_media(fan_id, mode, theme, paid_only=True)
-    if not items:
-        return "nothing"
-    # 3-4. pick + price
-    item = items[0]
-    price = item.get("suggestedPriceCents") or settings.DEFAULT_PPV_PRICE_CENTS
-    # 5. send
-    ctx["outbox"].append({"type": "ppv", "mediaUuid": item["mediaUuid"],
+    entry = (ctx.get("menu") or {}).get((media_id or "").strip().lower())
+    if not entry:
+        return "unavailable"  # hallucinated / stale id — nothing sent
+    media_uuids = entry["media_uuids"]
+    price = int(entry.get("price_cents") or 0)
+    paid = price > 0
+    # Defensive re-check: the menu already gated paid items, but a SECOND paid send in
+    # the same turn would bypass the cooldown the first one set — block it here.
+    if paid and store.cooldown_active(ctx["fan_id"]):
+        return "unavailable"
+    resp = _send(caption, media_uuids=media_uuids, price_cents=price)
+    if resp is None:
+        return "send_failed"  # delivery error surfaced — don't record a phantom send
+    ctx["outbox"].append({"type": entry["kind"], "mediaUuids": media_uuids,
                           "price_cents": price, "caption": caption})
-    _send(caption, media_uuids=[item["mediaUuid"]], price_cents=price)
-    # 6. record — offered (cooldown) + pending/unpaid (locked until the fan pays)
-    store.record_offer(fan_id, item["mediaUuid"])
-    store.add_pending_offer(fan_id, item["mediaUuid"], price, caption)
-    return f"sent::{item['description']}::${price/100:.2f}"
+    _persist_sent_media(caption, media_uuids, price, resp)
+    # paid → burns the PPV cooldown + locks each item until paid; free teaser does neither
+    store.record_offer(ctx["fan_id"], media_uuids, counts_toward_cooldown=paid)
+    if paid:
+        for u in media_uuids:
+            store.add_pending_offer(ctx["fan_id"], u, price, caption)
+        suffix = f"::{len(media_uuids)}" if len(media_uuids) > 1 else ""
+        return f"sent::{entry['desc']}::${price/100:.2f}{suffix}"
+    return f"sent::{entry['desc']}"
 
 
-@tool
-def offer_bundle(theme: str, caption: str) -> str:
-    """Offer a themed PAID bundle — a set of photos/videos sold together under one price
-    (e.g. 'girls night out', 'beach day'). You give the vibe + caption; the system picks the
-    best matching bundle, DROPS any items the fan already owns, adjusts the price for what's
-    left, and either sends it or declines. Use this instead of offer_content when a themed
-    package fits better than a single item.
-    Returns: 'sent::<title>::<price>::<n items>' | 'nothing' (no unowned bundle fits) | 'not_now' (bad timing)."""
-    ctx = _ctx.get()
-    fan_id, mode = ctx["fan_id"], ctx["mode"]
-    # same timing gates as a single paid offer
-    if store.MODE_LEVEL.get(mode, 1) < store.MODE_LEVEL["FLIRTY"]:
-        return "not_now"
-    if not ctx.get("monetize_ok"):
-        return "not_now"
-    if store.cooldown_active(fan_id):
-        return "not_now"
-    offer = store.best_bundle_offer(fan_id, mode, theme)
-    if not offer or not offer["items"]:
-        return "nothing"
-    ctx["outbox"].append({"type": "bundle", "bundleId": offer["bundleId"],
-                          "mediaUuids": offer["items"], "price_cents": offer["price_cents"],
-                          "caption": caption})
-    _send(caption, media_uuids=offer["items"], price_cents=offer["price_cents"])
-    store.record_offer(fan_id, offer["items"])  # record ALL members so none re-offered
-    for u in offer["items"]:                     # each member is locked until paid
-        store.add_pending_offer(fan_id, u, offer["price_cents"], caption)
-    return f"sent::{offer['title']}::${offer['price_cents']/100:.2f}::{len(offer['items'])}"
-
-
-ALL_TOOLS = [send_message, save_fact, send_teaser, offer_content, offer_bundle]
+ALL_TOOLS = [send_message, save_fact, send_media]

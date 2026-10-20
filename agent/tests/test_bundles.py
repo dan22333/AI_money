@@ -1,7 +1,20 @@
-"""Content bundles: sold as a themed set, members also sell standalone, owned
-members are excluded and the price adjusts. All deterministic — no LLM."""
+"""Content bundles via the menu: a themed set appears as ONE menu entry (owned
+members excluded, price adjusted), and send_media sends the whole unowned set under
+one price. All deterministic — no LLM."""
 import store
 import tools
+
+
+def _menu(mode, monetize=True, fan="sim:f"):
+    tools.set_context(fan_id=fan, user_uuid=fan, dry_run=True)
+    menu = store.sendable_menu(fan, mode, monetize_ok=monetize)
+    tools.update_context(mode=mode, monetize_ok=monetize, menu=menu)
+    return menu
+
+
+def _bundle_id(menu, title):
+    return next((e["id"] for e in menu.values()
+                 if e["kind"] == "bundle" and e["desc"] == title), None)
 
 
 def _seed():
@@ -12,67 +25,63 @@ def _seed():
                      bundle_price_cents=1200)
 
 
-def _ctx(mode, monetize=True, fan="sim:f"):
-    tools.set_context(fan_id=fan, user_uuid=fan, dry_run=True)
-    tools.update_context(mode=mode, monetize_ok=monetize)
-
-
 def test_sends_full_bundle_when_none_owned():
-    _seed(); _ctx("FLIRTY")
-    res = tools.offer_bundle.invoke({"theme": "girls night out", "caption": "come out with us 😏"})
+    _seed()
+    menu = _menu("FLIRTY")
+    bid = _bundle_id(menu, "Girls Night Out")
+    assert bid
+    res = tools.send_media.invoke({"media_id": bid, "caption": "come out with us 😏"})
     assert res == "sent::Girls Night Out::$12.00::2"
     out = tools.get_outbox()[-1]
-    assert out["type"] == "bundle"
-    assert set(out["mediaUuids"]) == {"gno_a", "gno_b"}
+    assert out["type"] == "bundle" and set(out["mediaUuids"]) == {"gno_a", "gno_b"}
     assert out["price_cents"] == 1200
-    # both members recorded as offered
-    offered = store.get_fan("sim:f")["recentlyOfferedUuids"]
-    assert set(offered) == {"gno_a", "gno_b"}
+    assert set(store.get_fan("sim:f")["recentlyOfferedUuids"]) == {"gno_a", "gno_b"}
 
 
 def test_excludes_owned_member_and_adjusts_price():
-    _seed(); _ctx("FLIRTY")
+    _seed()
     store.add_purchase("sim:f", "inv1", gross_cents=800, source="message", media_uuids=["gno_a"])
-    res = tools.offer_bundle.invoke({"theme": "girls night", "caption": "the rest of the set 😏"})
-    # only gno_b left; price = 1200 * 700/1500 = 560
-    assert res == "sent::Girls Night Out::$5.60::1"
+    menu = _menu("FLIRTY")
+    bid = _bundle_id(menu, "Girls Night Out")
+    res = tools.send_media.invoke({"media_id": bid, "caption": "the rest of the set 😏"})
+    # only gno_b left; price = 1200 * 700/1500 = 560; single remaining item → no count suffix
+    assert res == "sent::Girls Night Out::$5.60"
     out = tools.get_outbox()[-1]
-    assert out["mediaUuids"] == ["gno_b"]
-    assert out["price_cents"] == 560
+    assert out["mediaUuids"] == ["gno_b"] and out["price_cents"] == 560
 
 
-def test_nothing_when_all_members_owned():
-    _seed(); _ctx("FLIRTY")
+def test_owned_bundle_absent_from_menu():
+    _seed()
     store.add_purchase("sim:f", "inv1", gross_cents=1500, source="message",
                        media_uuids=["gno_a", "gno_b"])
-    assert tools.offer_bundle.invoke({"theme": "girls", "caption": "x"}) == "nothing"
+    assert _bundle_id(_menu("FLIRTY"), "Girls Night Out") is None
 
 
-def test_not_now_when_mode_too_cool():
-    _seed(); _ctx("WARM")
-    assert tools.offer_bundle.invoke({"theme": "girls", "caption": "x"}) == "not_now"
+def test_bundle_absent_when_mode_too_cool():
+    _seed()
+    assert _bundle_id(_menu("WARM"), "Girls Night Out") is None
 
 
-def test_not_now_when_monetize_false():
-    _seed(); _ctx("FLIRTY", monetize=False)
-    assert tools.offer_bundle.invoke({"theme": "girls", "caption": "x"}) == "not_now"
+def test_bundle_absent_when_monetize_false():
+    _seed()
+    assert _bundle_id(_menu("FLIRTY", monetize=False), "Girls Night Out") is None
 
 
-def test_heat_gated_bundle_not_offered():
-    # bundle hotter than current mode → not eligible
+def test_heat_gated_bundle_absent_from_menu():
     store.add_catalog_item("x1", "explicit a", ["spicy"], heat=4, suggested_price_cents=900)
     store.add_catalog_item("x2", "explicit b", ["spicy"], heat=4, suggested_price_cents=900)
     store.add_bundle("bundle:hot", "Hot Set", "very spicy", ["spicy"], heat=4,
                      items=["x1", "x2"], bundle_price_cents=1500)
-    _ctx("FLIRTY")
-    assert tools.offer_bundle.invoke({"theme": "spicy", "caption": "x"}) == "nothing"
+    assert _bundle_id(_menu("FLIRTY"), "Hot Set") is None   # hotter than mode
 
 
-def test_recently_offered_members_not_reoffered(monkeypatch):
+def test_recently_offered_bundle_drops_off_menu(monkeypatch):
     from config import settings
-    monkeypatch.setattr(settings, "PPV_COOLDOWN_MINUTES", 0)   # ignore time cooldown
+    monkeypatch.setattr(settings, "PPV_COOLDOWN_MINUTES", 0)    # ignore time cooldown
     monkeypatch.setattr(settings, "MAX_OFFERS_PER_SESSION", 5)  # ignore count cooldown
-    _seed(); _ctx("FLIRTY")
-    assert tools.offer_bundle.invoke({"theme": "girls", "caption": "a"}).startswith("sent::")
-    # all members already offered → nothing new to show
-    assert tools.offer_bundle.invoke({"theme": "girls", "caption": "b"}) == "nothing"
+    _seed()
+    menu = _menu("FLIRTY")
+    bid = _bundle_id(menu, "Girls Night Out")
+    assert tools.send_media.invoke({"media_id": bid, "caption": "a"}).startswith("sent::")
+    # both members now recently-offered → bundle no longer appears on a fresh menu
+    assert _bundle_id(_menu("FLIRTY"), "Girls Night Out") is None

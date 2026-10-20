@@ -20,25 +20,25 @@ def test_agent_sells_then_never_resells(monkeypatch):
     store.add_catalog_item("ppv1", "spicy bedroom set", ["spicy", "bedroom"], heat=4,
                            suggested_price_cents=1500)
 
-    # turn 1: model asks to sell, then speaks
+    # turn 1: model picks the only menu item (m1) to sell, then speaks
     llm.set_voice_model(FakeChat([
-        ai(tool="offer_content", args={"theme": "bedroom", "caption": "earned this 😏"}),
+        ai(tool="send_media", args={"media_id": "m1", "caption": "earned this 😏"}),
         ai(text="hope you love it babe 🙈"),
     ]))
     out = graph.handle_message("sim:mike", "sim:mike", "tell me what you'd do to me", dry_run=True)
     assert out["reply"] == "hope you love it babe 🙈"
     assert out["mode"] == "EXPLICIT"
     ppv = [a for a in out["actions"] if a["type"] == "ppv"]
-    assert ppv and ppv[0]["mediaUuid"] == "ppv1" and ppv[0]["price_cents"] == 1500
+    assert ppv and ppv[0]["mediaUuids"] == ["ppv1"] and ppv[0]["price_cents"] == 1500
 
     # simulate the fan buying it
     store.add_purchase("sim:mike", "FV-9", gross_cents=1500, source="message",
                        media_uuids=["ppv1"])
 
-    # turn 2: model tries to sell the same theme again → tool declines ("nothing"),
-    # model falls back to a plain reply. No second PPV for the owned item.
+    # turn 2: owned item is gone from the menu, so send_media('m1') finds nothing
+    # ('unavailable'); model falls back to a plain reply. No second PPV.
     llm.set_voice_model(FakeChat([
-        ai(tool="offer_content", args={"theme": "bedroom", "caption": "want more? 😏"}),
+        ai(tool="send_media", args={"media_id": "m1", "caption": "want more? 😏"}),
         ai(text="mmm glad you liked that one"),
     ]))
     out2 = graph.handle_message("sim:mike", "sim:mike", "that was hot, more?", dry_run=True)

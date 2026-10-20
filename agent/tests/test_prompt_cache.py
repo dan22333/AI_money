@@ -47,7 +47,7 @@ def test_prefix_is_stable_across_fans(monkeypatch):
     assert a[0].content == b[0].content
 
     # 2) the prefix carries persona + operating instructions, NO per-fan data
-    assert "send_teaser" in graph.SYSTEM_PREFIX
+    assert "send_media" in graph.SYSTEM_PREFIX
     assert "Mike" not in graph.SYSTEM_PREFIX
     assert "spentCents" not in graph.SYSTEM_PREFIX
 
