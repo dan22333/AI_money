@@ -55,7 +55,6 @@ OPERATING_INSTRUCTIONS = (
     "menu id and it returned 'sent'. When the fan asks for a pic and you want to send one, CALL "
     "send_media — do not describe or promise a send without calling it. "
     "Don't repeat the same line or fantasy back to back — move the conversation forward. "
-    "Save new facts with save_fact. "
     "TEXTING STYLE: write like a real person thumb-typing — short, casual, lowercase is fine, a "
     "little imperfect. Do NOT sound like an AI or an assistant: no over-explaining, no lists, no "
     "overly polished or formal sentences, no 'As an...'. NEVER use em-dashes (—) or the "

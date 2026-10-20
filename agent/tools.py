@@ -2,7 +2,11 @@
 
 The agent NEVER reasons over inventory, purchases, or prices. The selling/media
 tools are deterministic: they run all checks and either act or decline. The agent
-only supplies intent (which tool, with a theme) and Jenny's voice (the caption/text).
+only supplies intent (which menu id) and Jenny's voice (the caption/text).
+
+Long-term memory is NOT a tool: mem0 extraction runs automatically on every turn
+(graph.maybe_learn), so there's no save_fact — the agent just talks, and durable
+facts are learned passively.
 """
 from __future__ import annotations
 
@@ -10,7 +14,6 @@ import contextvars
 
 from langchain_core.tools import tool
 
-import memory
 import store
 from fanvue_client import fanvue
 
@@ -85,14 +88,6 @@ def send_message(text: str) -> str:
 
 
 @tool
-def save_fact(fact: str) -> str:
-    """Remember a durable fact about this fan for next time.
-    e.g. 'His name is Mike', 'Works night shifts', 'Has a dog named Rex'. Keep it short."""
-    memory.add_fact(_ctx.get()["fan_id"], fact)
-    return f"saved: {fact}"
-
-
-@tool
 def send_media(media_id: str, caption: str) -> str:
     """Send a photo/video from the "YOU CAN SEND NOW" menu in your context. Pass the
     menu id (e.g. 'm2') plus your caption. ONLY use ids that appear in the menu THIS
@@ -129,4 +124,4 @@ def send_media(media_id: str, caption: str) -> str:
     return f"sent::{entry['desc']}"
 
 
-ALL_TOOLS = [send_message, save_fact, send_media]
+ALL_TOOLS = [send_message, send_media]
