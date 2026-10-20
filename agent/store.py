@@ -305,7 +305,8 @@ def reset_memory() -> None:
 def _default_fan(fan_id: str) -> dict:
     return {
         "fanUuid": fan_id, "firstSeenAt": _now().isoformat(), "lastSeenAt": None,
-        "subscriptionStatus": "unknown", "totalSpendCents": 0, "purchaseCount": 0,
+        "subscriptionStatus": "unknown", "totalSpendCents": 0, "totalNetCents": 0,
+        "purchaseCount": 0,
         "tier": "new", "currentMode": "COLD", "currentSessionId": None, "sessionCount": 0,
         "rollingSummary": "", "summarizedAtCount": 0,
         "purchasedUuids": [], "recentlyOfferedUuids": [],
@@ -691,15 +692,36 @@ def advance_watermark_to(fan_id: str, ts: str) -> None:
 
 # ---------------- purchases ----------------
 def add_purchase(fan_id: str, invoice_id: str, *, gross_cents: int, source: str,
+                 net_cents: int = 0, currency: str = "",
                  media_uuids=None, message_uuid: str = "") -> None:
-    if _backend().sub_get(FANS, fan_id, PURCHASES, invoice_id) is not None:
-        return  # idempotent (doc id = invoice)
+    """Record a purchase (idempotent by invoice). We store BOTH figures Fanvue
+    reports: grossCents = what the fan paid, netCents = what the creator keeps after
+    Fanvue's cut (+ currency). Totals on the fan track both (totalSpendCents = gross,
+    totalNetCents = net) so revenue vs take-home are each queryable.
+
+    BACKFILL: the invoice doc is idempotent, but a row written before we tracked net
+    is PATCHED here — if the row exists with no netCents and we now have one, fill it
+    in and advance totalNetCents once. So a forced full earnings re-pull backfills net
+    onto historical purchases without double-counting gross."""
+    existing = _backend().sub_get(FANS, fan_id, PURCHASES, invoice_id)
+    if existing is not None:
+        if net_cents and not existing.get("netCents"):
+            existing["netCents"] = net_cents
+            if currency:
+                existing.setdefault("currency", currency)
+            _backend().sub_set(FANS, fan_id, PURCHASES, invoice_id, existing)
+            fan = get_fan(fan_id)
+            fan["totalNetCents"] = fan.get("totalNetCents", 0) + net_cents
+            save_fan(fan)
+        return  # idempotent (doc id = invoice) — gross already counted
     _backend().sub_set(FANS, fan_id, PURCHASES, invoice_id,
-                       {"invoiceId": invoice_id, "grossCents": gross_cents, "source": source,
+                       {"invoiceId": invoice_id, "grossCents": gross_cents,
+                        "netCents": net_cents, "currency": currency, "source": source,
                         "mediaUuids": media_uuids or [], "messageUuid": message_uuid,
                         "ts": _now().isoformat()})
     fan = get_fan(fan_id)
     fan["totalSpendCents"] = fan.get("totalSpendCents", 0) + gross_cents
+    fan["totalNetCents"] = fan.get("totalNetCents", 0) + net_cents
     fan["purchaseCount"] = fan.get("purchaseCount", 0) + 1
     fan["lastPurchaseAt"] = _now().isoformat()
     for u in (media_uuids or []):

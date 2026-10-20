@@ -95,12 +95,15 @@ def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: b
         fan = buyer.get("uuid") or data.get("buyerUuid")
         invoice = data.get("invoiceId") or data.get("invoiceNumber") or event.get("id", "inv")
         gross = int(data.get("grossCents", data.get("amount", 0)))
+        net = int(data.get("netCents", data.get("net", 0)))
+        currency = data.get("currency", "")
         source = data.get("source", "unknown")
         media = data.get("mediaUuids", [])
         msg_uuid = data.get("messageUuid", "")
         if fan:
             store.use_namespace_for(fan)
-            store.add_purchase(fan, invoice, gross_cents=gross, source=source,
+            store.add_purchase(fan, invoice, gross_cents=gross, net_cents=net,
+                               currency=currency, source=source,
                                media_uuids=media, message_uuid=msg_uuid)
             if proactive_on_purchase:
                 note = f"[fan just unlocked your paid content ({source}, ${gross/100:.2f}) — react warmly]"

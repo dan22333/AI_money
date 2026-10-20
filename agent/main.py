@@ -211,14 +211,20 @@ def refresh_tokens(x_sim_secret: str | None = Header(default=None)):
 
 
 @app.post("/admin/reconcile")
-def reconcile(dry_run: bool = False, x_sim_secret: str | None = Header(default=None)):
+def reconcile(dry_run: bool = False, full_earnings: bool = False,
+              x_sim_secret: str | None = Header(default=None)):
     """Pull from Fanvue and upsert idempotently into Firestore/mem0. Pass
     ?dry_run=true to PREVIEW: pulls + returns would-change counts but writes
-    nothing — a safety rail to sanity-check reach/connectivity before a real run."""
+    nothing — a safety rail to sanity-check reach/connectivity before a real run.
+
+    ?full_earnings=true ignores the earnings delta watermark and re-reads ALL
+    earnings — a one-time backfill that patches net (creator take-home) + currency
+    onto purchases recorded before net was tracked. Idempotent (gross isn't
+    re-counted); the watermark still advances so nightly runs stay incremental."""
     if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
     import reconcile as _reconcile
-    return _reconcile.run(dry_run=dry_run)
+    return _reconcile.run(dry_run=dry_run, full_earnings=full_earnings)
 
 
 @app.post("/admin/dedup_messages")

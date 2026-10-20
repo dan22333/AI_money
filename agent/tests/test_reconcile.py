@@ -133,6 +133,45 @@ def test_reconcile_backfills_fans_and_purchases(monkeypatch):
     assert f2.get("subscriptionStatus") != "active"
 
 
+def test_reconcile_records_gross_and_net(monkeypatch):
+    """Both figures Fanvue reports are stored: gross (fan paid) + net (creator keeps)
+    + currency, and the fan's totals track each separately."""
+    _patch(monkeypatch, FakeFanvue(
+        earnings=[{"user": {"uuid": "fan-gn"}, "transactionOrderId": "INV-GN",
+                   "gross": 2000, "net": 1600, "currency": "USD",
+                   "date": "2026-10-03T00:00:00Z", "source": "ppv"}],
+    ))
+    out = reconcile.run()
+    assert out["purchasesSynced"] == 1
+    p = store._backend().sub_get(store.FANS, "fan-gn", store.PURCHASES, "INV-GN")
+    assert p["grossCents"] == 2000 and p["netCents"] == 1600 and p["currency"] == "USD"
+    f = store.get_fan("fan-gn")
+    assert f["totalSpendCents"] == 2000 and f["totalNetCents"] == 1600
+
+
+def test_full_earnings_backfills_net_onto_existing_gross_only_purchase(monkeypatch):
+    """A purchase written before net was tracked (gross only) gets net patched in by a
+    ?full_earnings=true re-pull — idempotently: gross is NOT re-counted, net is added once."""
+    # simulate a legacy row: gross recorded, no net
+    store.add_purchase("fan-bf", "INV-BF", gross_cents=2000, source="ppv")
+    assert store.get_fan("fan-bf")["totalNetCents"] == 0
+
+    _patch(monkeypatch, FakeFanvue(
+        earnings=[{"user": {"uuid": "fan-bf"}, "transactionOrderId": "INV-BF",
+                   "gross": 2000, "net": 1600, "currency": "USD",
+                   "date": "2026-10-03T00:00:00Z", "source": "ppv"}],
+    ))
+    out = reconcile.run(full_earnings=True)
+    assert out["purchasesSynced"] == 1
+    f = store.get_fan("fan-bf")
+    assert f["totalSpendCents"] == 2000      # gross NOT double-counted
+    assert f["totalNetCents"] == 1600        # net backfilled once
+    assert f["purchaseCount"] == 1
+    # re-running is a no-op (net already present → not added again)
+    reconcile.run(full_earnings=True)
+    assert store.get_fan("fan-bf")["totalNetCents"] == 1600
+
+
 def test_reconcile_downgrades_unfollow_and_unsubscribe(monkeypatch):
     """A fan present last run but ABSENT from the live list this run has
     unfollowed / unsubscribed — flags must be cleared, not left stale."""
