@@ -411,6 +411,12 @@ def compute_session(fan_id: str) -> tuple[str, bool]:
         fan["currentSessionId"] = sid
         fan["sessionCount"] = fan.get("sessionCount", 0) + 1
         fan["offersThisSession"] = 0  # reset cooldown counter per session
+        # "recently offered" is per-SESSION: clear it so content she showed (but the
+        # fan didn't buy) can resurface in a later session. Purchased items
+        # (purchasedUuids) and still-unpaid PPVs (pendingOffers) are excluded
+        # separately and permanently, so this never re-sends something owned or a
+        # locked PPV awaiting payment — only genuinely unsold content comes back.
+        fan["recentlyOfferedUuids"] = []
     # record activity so the NEXT message measures its gap from now (self-contained)
     fan["lastSeenAt"] = now.isoformat()
     save_fan(fan)
@@ -815,6 +821,8 @@ def eligible_media(fan_id: str, mode: str, theme: str = "", *, paid_only: bool =
     level = MODE_LEVEL.get(mode, 1)
     bought = set(fan.get("purchasedUuids", []))
     offered = set(fan.get("recentlyOfferedUuids", []))
+    pending = {o.get("mediaUuid") for o in fan.get("pendingOffers", [])}  # sent, still unpaid
+    skip = bought | offered | pending
     q = (theme or "").lower().split()
     out = []
     for it in _backend().list(CATALOG):
@@ -822,7 +830,7 @@ def eligible_media(fan_id: str, mode: str, theme: str = "", *, paid_only: bool =
             continue
         if it["heat"] > level:
             continue
-        if it["mediaUuid"] in bought or it["mediaUuid"] in offered:
+        if it["mediaUuid"] in skip:  # already owned, shown this session, or locked-unpaid
             continue
         if paid_only and it.get("suggestedPriceCents", 0) <= 0:
             continue
@@ -914,12 +922,14 @@ def eligible_bundles(fan_id: str, mode: str) -> List[dict]:
     level = MODE_LEVEL.get(mode, 1)
     bought = set(fan.get("purchasedUuids", []))
     offered = set(fan.get("recentlyOfferedUuids", []))
+    pending = {o.get("mediaUuid") for o in fan.get("pendingOffers", [])}
+    blocked = offered | pending  # shown this session OR a locked-unpaid PPV
     out = []
     for b in _backend().list(BUNDLES):
         if b.get("status") != "ready" or b.get("heat", 1) > level:
             continue
         unowned = [m for m in b.get("items", []) if m not in bought]
-        if not unowned or all(m in offered for m in unowned):
+        if not unowned or all(m in blocked for m in unowned):
             continue
         out.append({"bundleId": b["bundleId"], "title": b.get("title", b["bundleId"]),
                     "items": unowned, "price_cents": bundle_price(b, unowned)})

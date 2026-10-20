@@ -92,6 +92,39 @@ def test_free_teaser_sends_and_does_not_burn_ppv_cooldown():
     assert store.get_fan("sim:f").get("offersThisSession", 0) == 0
 
 
+def test_recently_offered_resets_next_session_but_unpaid_ppv_stays_excluded():
+    """recentlyOffered is per-session: an UNSOLD free teaser resurfaces in a new
+    session, but a still-UNPAID PPV (pendingOffers) stays excluded so we never
+    re-send a locked item — we nudge the existing one instead."""
+    from datetime import datetime, timedelta, timezone
+    store.add_catalog_item("free1", "beach pic", ["beach"], heat=2, suggested_price_cents=0)
+    store.add_catalog_item("ppv1", "spicy set", ["spicy"], heat=4, suggested_price_cents=5000)
+
+    # session 1: send the free teaser AND the PPV
+    menu = _menu("EXPLICIT")
+    tools.send_media.invoke({"media_id": _id_for(menu, "free1"), "caption": "a"})
+    tools.send_media.invoke({"media_id": _id_for(menu, "ppv1"), "caption": "b"})
+    fan = store.get_fan("sim:f")
+    assert {"free1", "ppv1"} <= set(fan["recentlyOfferedUuids"])
+    assert any(o["mediaUuid"] == "ppv1" for o in fan["pendingOffers"])
+
+    # same session → both excluded from the menu
+    menu2 = _menu("EXPLICIT")
+    assert _id_for(menu2, "free1") is None and _id_for(menu2, "ppv1") is None
+
+    # force a NEW session (backdate activity + last-PPV so the gap + cooldown clear)
+    f = store.get_fan("sim:f")
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    f["lastSeenAt"] = old
+    f["lastPpvAt"] = old
+    store.save_fan(f)
+    store.compute_session("sim:f")
+
+    menu3 = _menu("EXPLICIT")
+    assert _id_for(menu3, "free1") is not None   # unsold free teaser comes back
+    assert _id_for(menu3, "ppv1") is None         # still-unpaid PPV stays excluded
+
+
 def test_send_failure_reports_and_does_not_record(monkeypatch):
     """A delivery error surfaces as 'send_failed' and records NO offer (so Jenny
     never claims a photo that didn't land)."""
