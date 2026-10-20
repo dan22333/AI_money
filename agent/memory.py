@@ -293,7 +293,9 @@ def backfill(fan_id: str, turns: List[dict]) -> int:
 
 
 def add_fact(fan_id: str, fact: str) -> None:
-    """Explicitly store a single fact (used by the save_fact tool)."""
+    """Explicitly store a single fact. No longer exposed as an agent tool (mem0
+    extracts facts automatically every turn via add_turn); kept for tests and any
+    direct/programmatic fact seeding."""
     client = _client_for(store.current_namespace())
     if client is not None:
         try:
