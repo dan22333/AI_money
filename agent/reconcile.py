@@ -116,12 +116,19 @@ def _sync_fans(dry_run: bool = False) -> dict:
     return {"fansSynced": n, "fansDowngraded": downgraded}
 
 
-def _sync_earnings(dry_run: bool = False) -> dict:
-    """Upsert real purchases (gross > 0). $0 rows (free follows/subs) are not
-    money and would mis-tier a fan, so they're skipped. Delta by last date."""
+def _sync_earnings(dry_run: bool = False, full: bool = False) -> dict:
+    """Upsert real purchases, recording BOTH gross (what the fan paid) and net (what
+    the creator keeps after Fanvue's cut) + currency — Fanvue's earnings rows carry
+    all three. $0 rows (free follows/subs) are not money and would mis-tier a fan, so
+    they're skipped. Delta by last date.
+
+    full=True ignores the delta watermark and re-reads ALL earnings — used to
+    backfill net onto historical purchases written before net was tracked
+    (add_purchase patches the missing field idempotently). The watermark still
+    advances to the newest row so the next nightly run stays incremental."""
     wm = store.get_sync_meta("earnings")
-    since = wm.get("lastDate")
-    latest = since
+    since = None if full else wm.get("lastDate")
+    latest = wm.get("lastDate")
     n = 0
     for e in fanvue.list_earnings(since=since):
         user = e.get("user") or {}
@@ -131,13 +138,16 @@ def _sync_earnings(dry_run: bool = False) -> dict:
         if date and (not latest or date > latest):
             latest = date
         gross = int(e.get("gross") or 0)
+        net = int(e.get("net") or 0)
+        currency = e.get("currency") or ""
         if not uuid or not invoice or gross <= 0:
             continue  # skip incomplete rows and $0 (follows/free subs aren't spend)
         store.use_namespace_for(uuid)
         if not dry_run:
-            store.add_purchase(uuid, invoice, gross_cents=gross, source=e.get("source", "reconcile"))
+            store.add_purchase(uuid, invoice, gross_cents=gross, net_cents=net,
+                               currency=currency, source=e.get("source", "reconcile"))
         n += 1
-    if latest and latest != since and not dry_run:
+    if latest and latest != wm.get("lastDate") and not dry_run:
         store.set_sync_meta("earnings", {"lastDate": latest})
     return {"purchasesSynced": n}
 
@@ -294,7 +304,7 @@ def _sync_media(dry_run: bool = False) -> dict:
     return {"mediaSynced": n}
 
 
-def run(since: str | None = None, dry_run: bool = False) -> dict:
+def run(since: str | None = None, dry_run: bool = False, full_earnings: bool = False) -> dict:
     """Run every sync, isolated so one failing source can't discard the others.
     Returns a summary (also the HTTP response body).
 
@@ -312,7 +322,7 @@ def run(since: str | None = None, dry_run: bool = False) -> dict:
     result: dict = {"status": "ok", "dryRun": dry_run}
     errors: dict = {}
     for name, fn in (("fans", lambda: _sync_fans(dry_run)),
-                     ("purchases", lambda: _sync_earnings(dry_run)),
+                     ("purchases", lambda: _sync_earnings(dry_run, full=full_earnings)),
                      ("messages", lambda: _sync_messages(creator, dry_run)),
                      ("media", lambda: _sync_media(dry_run))):
         try:
