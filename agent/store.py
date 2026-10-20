@@ -936,22 +936,24 @@ def eligible_bundles(fan_id: str, mode: str) -> List[dict]:
     return out
 
 
-def sendable_menu(fan_id: str, mode: str, *, monetize_ok: bool, limit: int = 8) -> dict:
+def sendable_menu(fan_id: str, mode: str, *, limit: int = 8) -> dict:
     """Deterministic 'what Jenny may send RIGHT NOW' menu for the prompt — so the
     agent chooses from REAL inventory instead of blind-guessing a theme (and writing
     captions for files that don't exist). Free teasers are always offered (eligible
     heat, unowned, not already shown); paid singles + bundles appear ONLY when selling
-    is open (mode ≥ FLIRTY, monetize_ok, not in cooldown). Each entry gets a short
-    stable id (m1, m2, …); returns {id: entry} where entry =
-    {id,kind,desc,price_cents,media_uuids}. The tool resolves the id back to the real
-    media uuids + price, so the agent never sees or sets a price."""
+    is open, which is derived HERE from the mode: mode ≥ FLIRTY and not in cooldown.
+    (No separate monetize_ok signal — the classifier's `mode` already carries the
+    heat judgment, so whether to sell is pure code.) Each entry gets a short stable id
+    (m1, m2, …); returns {id: entry} where entry = {id,kind,desc,price_cents,
+    media_uuids}. The tool resolves the id back to the real media uuids + price, so
+    the agent never sees or sets a price."""
     entries: List[dict] = []
     for it in eligible_media(fan_id, mode, "", paid_only=False):
         if it.get("suggestedPriceCents", 0) == 0:
             entries.append({"kind": "teaser", "desc": it["description"],
                             "price_cents": 0, "media_uuids": [it["mediaUuid"]]})
     selling_open = (MODE_LEVEL.get(mode, 1) >= MODE_LEVEL["FLIRTY"]
-                    and monetize_ok and not cooldown_active(fan_id))
+                    and not cooldown_active(fan_id))
     if selling_open:
         for it in eligible_media(fan_id, mode, "", paid_only=True):
             entries.append({"kind": "ppv", "desc": it["description"],

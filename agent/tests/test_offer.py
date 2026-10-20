@@ -5,12 +5,12 @@ import store
 import tools
 
 
-def _menu(mode, monetize=True, fan="sim:f"):
+def _menu(mode, fan="sim:f"):
     """Mirror graph.load_context: build the sendable menu and load it into the tool
     context, then return it so the test can look up ids."""
     tools.set_context(fan_id=fan, user_uuid=fan, dry_run=True)
-    menu = store.sendable_menu(fan, mode, monetize_ok=monetize)
-    tools.update_context(mode=mode, monetize_ok=monetize, menu=menu)
+    menu = store.sendable_menu(fan, mode)
+    tools.update_context(mode=mode, menu=menu)
     return menu
 
 
@@ -28,12 +28,6 @@ def _seed():
 def test_paid_items_absent_from_menu_when_mode_too_cool():
     _seed()
     menu = _menu("WARM")  # selling not open below FLIRTY
-    assert all(e["price_cents"] == 0 for e in menu.values())
-
-
-def test_paid_items_absent_when_monetize_false():
-    _seed()
-    menu = _menu("EXPLICIT", monetize=False)
     assert all(e["price_cents"] == 0 for e in menu.values())
 
 
