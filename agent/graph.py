@@ -17,6 +17,7 @@ from langgraph.prebuilt import ToolNode
 import llm
 import memory
 import modes
+import sanitize
 import store
 import summary
 import tasks
@@ -56,6 +57,10 @@ OPERATING_INSTRUCTIONS = (
     "'check your DMs', or imply you sent a pic unless you called send_media this turn with a real "
     "menu id and it returned 'sent'. When the fan asks for a pic and you want to send one, CALL "
     "send_media — do not describe or promise a send without calling it. "
+    "OUTPUT RULE: your reply is ONLY the exact words Jenny texts the fan — nothing else. "
+    "NEVER narrate or mention tools, menu ids (m1, m2…), what you 'sent', or that an action "
+    "'succeeded'; never write meta like 'the tool', 'continue as Jenny', or 'here's a short text'; "
+    "no preamble and no stage directions. Just the message itself. "
     "Don't repeat the same line or fantasy back to back — move the conversation forward. "
     "TEXTING STYLE: write like a real person thumb-typing — short, casual, lowercase is fine, a "
     "little imperfect. Do NOT sound like an AI or an assistant: no over-explaining, no lists, no "
@@ -330,7 +335,9 @@ def _persist_reply(fan_id: str, incoming: str, final: str, *, mode: str,
 def _final_text(result: dict) -> str:
     for m in reversed(result["messages"]):
         if isinstance(m, AIMessage) and m.content:
-            return m.content
+            # strip any model meta-narration ("the tool sent m1 successfully…")
+            # before it can reach the fan — backstop to the prompt's OUTPUT RULE.
+            return sanitize.sanitize_reply(m.content) if isinstance(m.content, str) else m.content
     return ""
 
 
