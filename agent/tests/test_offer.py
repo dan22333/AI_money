@@ -1,10 +1,21 @@
+"""Selling via the menu + single send_media tool. The agent picks an id from the
+deterministic 'YOU CAN SEND NOW' menu; the tool resolves it to real media + price,
+gates paid sends, and records the offer. All offline (dry_run), no LLM."""
 import store
 import tools
 
 
-def _ctx(mode, monetize=True, fan="sim:f"):
+def _menu(mode, monetize=True, fan="sim:f"):
+    """Mirror graph.load_context: build the sendable menu and load it into the tool
+    context, then return it so the test can look up ids."""
     tools.set_context(fan_id=fan, user_uuid=fan, dry_run=True)
-    tools.update_context(mode=mode, monetize_ok=monetize)
+    menu = store.sendable_menu(fan, mode, monetize_ok=monetize)
+    tools.update_context(mode=mode, monetize_ok=monetize, menu=menu)
+    return menu
+
+
+def _id_for(menu, uuid):
+    return next((e["id"] for e in menu.values() if uuid in e["media_uuids"]), None)
 
 
 def _seed():
@@ -14,53 +25,82 @@ def _seed():
                            suggested_price_cents=1500)
 
 
-def test_not_now_when_mode_too_cool():
-    _seed(); _ctx("WARM")
-    assert tools.offer_content.invoke({"theme": "spicy", "caption": "hey"}) == "not_now"
+def test_paid_items_absent_from_menu_when_mode_too_cool():
+    _seed()
+    menu = _menu("WARM")  # selling not open below FLIRTY
+    assert all(e["price_cents"] == 0 for e in menu.values())
 
 
-def test_not_now_when_monetize_flag_false():
-    _seed(); _ctx("EXPLICIT", monetize=False)
-    assert tools.offer_content.invoke({"theme": "spicy", "caption": "hey"}) == "not_now"
+def test_paid_items_absent_when_monetize_false():
+    _seed()
+    menu = _menu("EXPLICIT", monetize=False)
+    assert all(e["price_cents"] == 0 for e in menu.values())
 
 
-def test_sells_eligible_item_and_records():
-    _seed(); _ctx("EXPLICIT")
-    res = tools.offer_content.invoke({"theme": "spicy bedroom", "caption": "just for you 😏"})
-    assert res.startswith("sent::")
-    out = tools.get_outbox()
-    assert out and out[-1]["type"] == "ppv"
-    assert out[-1]["mediaUuid"] == "ppv_explicit"
-    assert out[-1]["price_cents"] == 1500
-    # recorded as offered → cannot be offered again
-    assert "ppv_explicit" in store.get_fan("sim:f")["recentlyOfferedUuids"]
+def test_sends_eligible_paid_item_and_records():
+    _seed()
+    menu = _menu("EXPLICIT")
+    mid = _id_for(menu, "ppv_explicit")
+    assert mid
+    res = tools.send_media.invoke({"media_id": mid, "caption": "just for you 😏"})
+    assert res.startswith("sent::") and "$15.00" in res
+    out = tools.get_outbox()[-1]
+    assert out["type"] == "ppv" and out["mediaUuids"] == ["ppv_explicit"]
+    assert out["price_cents"] == 1500
+    fan = store.get_fan("sim:f")
+    assert "ppv_explicit" in fan["recentlyOfferedUuids"]           # not re-offered
+    assert any(o["mediaUuid"] == "ppv_explicit" for o in fan["pendingOffers"])  # locked until paid
 
 
-def test_never_resells_purchased_item():
-    # single paid item; once purchased there is nothing left to sell
+def test_purchased_item_never_in_menu():
     store.add_catalog_item("ppv_only", "spicy bedroom set", ["spicy", "bedroom"], heat=4,
                            suggested_price_cents=1500)
-    _ctx("EXPLICIT")
     store.add_purchase("sim:f", "inv1", gross_cents=1500, source="message",
                        media_uuids=["ppv_only"])
-    res = tools.offer_content.invoke({"theme": "bedroom", "caption": "x"})
-    assert res == "nothing"
+    menu = _menu("EXPLICIT")
+    assert _id_for(menu, "ppv_only") is None
 
 
-def test_cooldown_blocks_second_offer(monkeypatch):
+def test_unknown_or_hallucinated_id_sends_nothing():
+    _seed()
+    _menu("EXPLICIT")
+    assert tools.send_media.invoke({"media_id": "m99", "caption": "x"}) == "unavailable"
+
+
+def test_cooldown_blocks_second_paid_send(monkeypatch):
     from config import settings
     monkeypatch.setattr(settings, "MAX_OFFERS_PER_SESSION", 1)
-    _seed(); _ctx("EXPLICIT")
-    first = tools.offer_content.invoke({"theme": "spicy", "caption": "a"})
+    _seed()
+    menu = _menu("EXPLICIT")
+    first = tools.send_media.invoke({"media_id": _id_for(menu, "ppv_explicit"), "caption": "a"})
     assert first.startswith("sent::")
-    second = tools.offer_content.invoke({"theme": "lingerie", "caption": "b"})
-    assert second == "not_now"  # cooldown cap reached
+    # menu was built before the send; the 2nd paid send is caught by the cooldown re-check
+    second = tools.send_media.invoke({"media_id": _id_for(menu, "ppv_flirty"), "caption": "b"})
+    assert second == "unavailable"
 
 
-def test_teaser_sends_free_item_only():
+def test_free_teaser_sends_and_does_not_burn_ppv_cooldown():
     store.add_catalog_item("free1", "gym selfie", ["gym"], heat=2, suggested_price_cents=0)
-    store.add_catalog_item("paid1", "paid set", ["gym"], heat=2, suggested_price_cents=900)
-    _ctx("WARM")
-    res = tools.send_teaser.invoke({"theme": "gym", "caption": "hi"})
+    store.add_catalog_item("paid1", "paid set", ["gym"], heat=3, suggested_price_cents=900)
+    menu = _menu("WARM")  # WARM: only the free teaser is sendable
+    mid = _id_for(menu, "free1")
+    assert mid
+    res = tools.send_media.invoke({"media_id": mid, "caption": "hi"})
     assert res == "sent::gym selfie"
-    assert tools.get_outbox()[-1]["mediaUuid"] == "free1"
+    assert tools.get_outbox()[-1]["mediaUuids"] == ["free1"]
+    # a FREE teaser must NOT consume the paid-offer budget (that was the old bug)
+    assert store.get_fan("sim:f").get("offersThisSession", 0) == 0
+
+
+def test_send_failure_reports_and_does_not_record(monkeypatch):
+    """A delivery error surfaces as 'send_failed' and records NO offer (so Jenny
+    never claims a photo that didn't land)."""
+    _seed()
+    from fanvue_client import fanvue
+    monkeypatch.setattr(fanvue, "_tokens", {"access_token": "x", "refresh_token": "y"})  # ready
+    monkeypatch.setattr(fanvue, "send_message",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    menu = _menu("EXPLICIT", fan="real:fail")
+    tools.update_context(dry_run=False)  # force a real send attempt (which will raise)
+    assert tools.send_media.invoke({"media_id": _id_for(menu, "ppv_explicit"), "caption": "x"}) == "send_failed"
+    assert "ppv_explicit" not in store.get_fan("real:fail").get("recentlyOfferedUuids", [])
