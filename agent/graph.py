@@ -58,12 +58,26 @@ OPERATING_INSTRUCTIONS = (
     "polished or formal sentences, no 'As an...'. One or two short lines is plenty. "
     "EMOJIS: use them RARELY — MOST messages should have NONE; at most ONE, only when it genuinely "
     "fits a moment. Never put an emoji in every message and never end every message with one. "
+    "PAID CONTENT IS LOCKED: a PPV you send stays LOCKED until the fan pays for it. NEVER assume "
+    "they've seen or received paid content until it's confirmed purchased — if your context says a "
+    "PPV is still unpaid, nudge them to unlock it; don't act like they already saw it. "
     "You are a real person, never an AI."
 )
 SYSTEM_PREFIX = PERSONA + "\n\n--- HOW YOU OPERATE ---\n" + OPERATING_INSTRUCTIONS
 
 
-def _dynamic_context(profile: str, facts: str, summary: str, mode: str) -> str:
+def _pending_offers_note(pending: list) -> str:
+    """One line telling Jenny which PPVs she's sent that are still LOCKED/unpaid, so
+    she doesn't assume the fan has seen them. Empty when there are none."""
+    if not pending:
+        return ""
+    bits = ", ".join(f"${(o.get('priceCents') or 0) / 100:.0f}" for o in pending[-3:])
+    return (f"\n\n--- UNLOCKED? NO — LOCKED PPVs AWAITING PAYMENT ---\n"
+            f"You've sent {len(pending)} paid item(s) ({bits}) that are NOT yet unlocked. "
+            f"Do not assume they've seen them — nudge to unlock; celebrate only once paid.")
+
+
+def _dynamic_context(profile: str, facts: str, summary: str, mode: str, pending: list | None = None) -> str:
     """The per-fan tail — everything that changes per request lives here, never
     in SYSTEM_PREFIX, so the cached prefix stays byte-identical."""
     return (
@@ -71,6 +85,7 @@ def _dynamic_context(profile: str, facts: str, summary: str, mode: str) -> str:
         + "\n\n--- WHAT YOU REMEMBER (use naturally) ---\n" + facts
         + "\n\n--- STORY SO FAR ---\n" + summary
         + "\n\n--- MODE ---\n" + modes.mode_directive(mode)
+        + _pending_offers_note(pending or [])
     )
 
 
@@ -125,6 +140,15 @@ def load_context(state: State) -> dict:
     recent_turns = [{"role": m["role"], "text": m["text"]}
                     for m in history[-settings.RECALL_CONTEXT_TURNS:]]
 
+    # Resolve the recall strategy. "adaptive" = cheap `context` on MOST turns, the
+    # heavier `expanded` (LLM query-expansion + multi-probe) only every Nth turn — so
+    # we get richer recall periodically without paying its latency every message.
+    strategy = settings.RECALL_STRATEGY
+    if strategy == "adaptive":
+        turn = store.bump_recall_turn(fan_id)
+        every = max(settings.RECALL_EXPAND_EVERY, 1)
+        strategy = "expanded" if (turn % every == 0) else "context"
+
     # classify_mode (fast mode LLM) and recall (embed + pgvector, maybe +expansion)
     # are independent and both block on the network, so run them concurrently — saves
     # the smaller off the critical path. copy_context() carries the Firestore/mem0
@@ -134,7 +158,7 @@ def load_context(state: State) -> dict:
     with ThreadPoolExecutor(max_workers=2) as ex:
         f_mode = ex.submit(ctx_mode.run, modes.classify, convo_for_mode, state["mode"])
         f_facts = ex.submit(ctx_recall.run, memory.recall_contextual, fan_id, incoming,
-                            recent_turns, strategy=settings.RECALL_STRATEGY)
+                            recent_turns, strategy=strategy)
         verdict = f_mode.result()
         facts = f_facts.result()
     mode, monetize_ok = verdict["mode"], verdict["monetize_ok"]
@@ -148,7 +172,8 @@ def load_context(state: State) -> dict:
     # Cacheable static prefix first; small per-fan context second.
     msgs: list = [
         SystemMessage(content=SYSTEM_PREFIX),
-        SystemMessage(content=_dynamic_context(profile, facts, summary, mode)),
+        SystemMessage(content=_dynamic_context(profile, facts, summary, mode,
+                                               fan.get("pendingOffers"))),
     ]
     for m in history:
         msgs.append(HumanMessage(content=m["text"]) if m["role"] == "fan"

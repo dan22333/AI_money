@@ -309,6 +309,8 @@ def _default_fan(fan_id: str) -> dict:
         "tier": "new", "currentMode": "COLD", "currentSessionId": None, "sessionCount": 0,
         "rollingSummary": "", "summarizedAtCount": 0,
         "purchasedUuids": [], "recentlyOfferedUuids": [],
+        "pendingOffers": [],   # PPVs sent but not yet paid/unlocked (see add_pending_offer)
+        "recallTurn": 0,       # adaptive-recall counter (expand every Nth turn)
         "lastPpvAt": None, "offersThisSession": 0,
         "source": "sim" if fan_id.startswith("sim:") else "fanvue",
     }
@@ -704,7 +706,45 @@ def add_purchase(fan_id: str, invoice_id: str, *, gross_cents: int, source: str,
         if u not in fan["purchasedUuids"]:
             fan["purchasedUuids"].append(u)
     fan["tier"] = "whale" if fan["totalSpendCents"] >= 10000 else "buyer"
+    # paid → no longer "offered-but-unpaid": drop matching pending offers so Jenny
+    # stops treating them as locked. If the webhook carries no media list, clear all
+    # (a payment landed → whatever was pending is settled).
+    pend = fan.get("pendingOffers") or []
+    if media_uuids:
+        fan["pendingOffers"] = [o for o in pend if o.get("mediaUuid") not in set(media_uuids)]
+    else:
+        fan["pendingOffers"] = []
     save_fan(fan)
+
+
+def add_pending_offer(fan_id: str, media_uuid: str, price_cents: int, caption: str = "") -> None:
+    """Record a PPV that was SENT but is still LOCKED (not yet paid). Surfaced in
+    Jenny's context so she never assumes the fan has seen it; cleared by add_purchase
+    when the payment webhook confirms the unlock."""
+    def fn(fan):
+        if fan is None:
+            fan = _default_fan(fan_id)
+        pend = [o for o in (fan.get("pendingOffers") or []) if o.get("mediaUuid") != media_uuid]
+        pend.append({"mediaUuid": media_uuid, "priceCents": price_cents,
+                     "caption": caption, "offeredAt": _now().isoformat()})
+        fan["pendingOffers"] = pend[-20:]  # cap
+        return fan, None
+    _backend().update_atomic(FANS, fan_id, fn)
+
+
+def list_pending_offers(fan_id: str) -> List[dict]:
+    return list(get_fan(fan_id).get("pendingOffers", []))
+
+
+def bump_recall_turn(fan_id: str) -> int:
+    """Increment + return the per-fan recall-turn counter (adaptive recall uses it to
+    run the heavy expansion only every Nth turn)."""
+    def fn(fan):
+        if fan is None:
+            fan = _default_fan(fan_id)
+        fan["recallTurn"] = int(fan.get("recallTurn", 0)) + 1
+        return fan, fan["recallTurn"]
+    return _backend().update_atomic(FANS, fan_id, fn)
 
 
 def purchased_uuids(fan_id: str) -> List[str]:
