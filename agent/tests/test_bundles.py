@@ -5,10 +5,10 @@ import store
 import tools
 
 
-def _menu(mode, monetize=True, fan="sim:f"):
+def _menu(mode, fan="sim:f"):
     tools.set_context(fan_id=fan, user_uuid=fan, dry_run=True)
-    menu = store.sendable_menu(fan, mode, monetize_ok=monetize)
-    tools.update_context(mode=mode, monetize_ok=monetize, menu=menu)
+    menu = store.sendable_menu(fan, mode)
+    tools.update_context(mode=mode, menu=menu)
     return menu
 
 
@@ -60,11 +60,6 @@ def test_owned_bundle_absent_from_menu():
 def test_bundle_absent_when_mode_too_cool():
     _seed()
     assert _bundle_id(_menu("WARM"), "Girls Night Out") is None
-
-
-def test_bundle_absent_when_monetize_false():
-    _seed()
-    assert _bundle_id(_menu("FLIRTY", monetize=False), "Girls Night Out") is None
 
 
 def test_heat_gated_bundle_absent_from_menu():

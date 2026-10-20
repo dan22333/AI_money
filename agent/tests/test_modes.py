@@ -8,16 +8,17 @@ def test_normalize_rejects_unknown_mode():
 
 
 def test_normalize_passes_valid_and_coerces_bools():
-    out = modes.normalize({"mode": "flirty", "escalate_ok": 1, "monetize_ok": 0}, "COLD")
+    out = modes.normalize({"mode": "flirty", "escalate_ok": 1}, "COLD")
     assert out["mode"] == "FLIRTY"
-    assert out["escalate_ok"] is True and out["monetize_ok"] is False
+    assert out["escalate_ok"] is True
+    assert "monetize_ok" not in out  # selling-open is derived from mode in code now
 
 
 def test_classify_uses_model_output(monkeypatch):
     monkeypatch.setattr(llm, "classify_json",
-                        lambda s, u, model=None: {"mode": "EXPLICIT", "monetize_ok": True})
+                        lambda s, u, model=None: {"mode": "EXPLICIT"})
     out = modes.classify([{"role": "fan", "text": "i want you"}], "FLIRTY")
-    assert out["mode"] == "EXPLICIT" and out["monetize_ok"] is True
+    assert out["mode"] == "EXPLICIT"
 
 
 def test_classify_holds_mode_on_error(monkeypatch):

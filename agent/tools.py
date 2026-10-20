@@ -23,7 +23,7 @@ _ctx: contextvars.ContextVar[dict] = contextvars.ContextVar("req_ctx", default={
 
 def set_context(fan_id: str, user_uuid: str, dry_run: bool = False) -> dict:
     ctx = {"fan_id": fan_id, "user_uuid": user_uuid, "dry_run": dry_run,
-           "mode": "COLD", "monetize_ok": False, "session_id": "", "outbox": [],
+           "mode": "COLD", "session_id": "", "outbox": [],
            "menu": {}}  # id -> sendable entry, built per-turn in graph.load_context
     _ctx.set(ctx)
     return ctx

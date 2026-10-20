@@ -133,7 +133,6 @@ class State(TypedDict):
                        # reaction), NOT a real fan utterance → stored kind="system"
                        # so the debounce worker never tries to "answer" it
     mode: str
-    monetize_ok: bool
     session_id: str
     dry_run: bool
 
@@ -193,15 +192,15 @@ def load_context(state: State) -> dict:
                             recent_turns, strategy=strategy)
         verdict = f_mode.result()
         facts = f_facts.result()
-    mode, monetize_ok = verdict["mode"], verdict["monetize_ok"]
+    mode = verdict["mode"]
 
     # Build the per-turn sendable menu (deterministic: real inventory the fan can be
-    # shown NOW, filtered by mode/monetize/cooldown, purchased + already-offered items
-    # excluded). The agent picks an id from it instead of guessing a theme.
-    menu = store.sendable_menu(fan_id, mode, monetize_ok=monetize_ok)
-    # tools read mode/monetize/menu from the request context
-    tools.update_context(mode=mode, monetize_ok=monetize_ok,
-                         session_id=state["session_id"], menu=menu)
+    # shown NOW, filtered by mode + cooldown, purchased + already-offered items
+    # excluded). Whether PAID content is offerable is derived in code from `mode`
+    # (≥ FLIRTY) — not a separate LLM judgment. The agent picks an id from the menu.
+    menu = store.sendable_menu(fan_id, mode)
+    # tools read mode/menu from the request context
+    tools.update_context(mode=mode, session_id=state["session_id"], menu=menu)
     profile = (f"joined={fan.get('subscriptionStatus')} · spentCents={fan.get('totalSpendCents',0)} "
                f"· tier={fan.get('tier')} · purchases={fan.get('purchaseCount',0)}")
     summary = fan.get("rollingSummary") or "(none yet)"
@@ -217,7 +216,7 @@ def load_context(state: State) -> dict:
                     else AIMessage(content=m["text"]))
     if state["incoming"]:  # batch mode leaves the tail of history as the latest turn
         msgs.append(HumanMessage(content=state["incoming"]))
-    return {"messages": msgs, "mode": mode, "monetize_ok": monetize_ok}
+    return {"messages": msgs, "mode": mode}
 
 
 def agent(state: State) -> dict:
@@ -389,8 +388,7 @@ def handle_message(fan_id: str, user_uuid: str, text: str, *,
     result = GRAPH.invoke({"messages": [], "fan_id": fan_id, "user_uuid": user_uuid,
                            "incoming": text, "fan_msg_uuid": fan_msg_uuid,
                            "through_ts": "", "system_note": system_note,
-                           "mode": "COLD", "monetize_ok": False,
-                           "session_id": "", "dry_run": dry_run})
+                           "mode": "COLD", "session_id": "", "dry_run": dry_run})
     final = _final_text(result)
     actions = tools.get_outbox()
     _deliver_and_record(fan_id, user_uuid, final, actions,
@@ -409,7 +407,7 @@ def handle_batch(fan_id: str, user_uuid: str, through_ts: str, batch_text: str) 
     tools.set_context(fan_id=fan_id, user_uuid=user_uuid, dry_run=False)
     result = GRAPH.invoke({"messages": [], "fan_id": fan_id, "user_uuid": user_uuid,
                            "incoming": "", "fan_msg_uuid": "", "through_ts": through_ts,
-                           "system_note": False, "mode": "COLD", "monetize_ok": False,
+                           "system_note": False, "mode": "COLD",
                            "session_id": "", "dry_run": False})
     final = _final_text(result)
     actions = tools.get_outbox()

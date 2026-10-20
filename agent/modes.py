@@ -30,10 +30,8 @@ Rules:
   STRAIGHT to EXPLICIT this turn, even from COLD/WARM. Do not crawl up one step.
 - Otherwise escalate smoothly as the fan warms (WARM→FLIRTY as flirting starts).
 - De-escalate if the fan cools, gets shy, or switches to a casual/non-sexual topic.
-- monetize_ok=true only when the fan is engaged AND at FLIRTY or EXPLICIT (a good moment to
-  offer paid content); false in COLD/WARM or when the fan seems put off.
 Respond with ONLY compact JSON:
-{"mode":"...","escalate_ok":bool,"monetize_ok":bool,"reason":"short"}"""
+{"mode":"...","escalate_ok":bool,"reason":"short"}"""
 
 
 def normalize(raw: dict, current_mode: str) -> dict:
@@ -43,7 +41,6 @@ def normalize(raw: dict, current_mode: str) -> dict:
     return {
         "mode": mode,
         "escalate_ok": bool(raw.get("escalate_ok", False)),
-        "monetize_ok": bool(raw.get("monetize_ok", False)),
         "reason": str(raw.get("reason", ""))[:200],
     }
 
