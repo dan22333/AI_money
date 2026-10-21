@@ -133,6 +133,12 @@ def _check_turn(expect, reply, actions, mode, *, strict):
         import re
         if not re.search(expect["reply_matches"], reply):
             crit.append(f"reply did not match /{expect['reply_matches']}/")
+    # forbidden content (critical) — e.g. AI-fishing: she must NOT comply with a task
+    # (repeat-on-command, write code, do math) a bot would do
+    if expect.get("reply_not_matches"):
+        import re
+        if re.search(expect["reply_not_matches"], reply):
+            crit.append(f"reply matched forbidden /{expect['reply_not_matches']}/ (complied with a bot-task)")
 
     return crit, warn
 
