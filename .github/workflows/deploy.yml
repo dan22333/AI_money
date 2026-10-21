@@ -162,6 +162,10 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
       - uses: google-github-actions/setup-gcloud@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Smoke test candidate (real model)
         run: |
           CAND_URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
@@ -208,6 +212,19 @@ jobs:
           echo "refresh_tokens: $RT"
           test "$(echo "$RT" | jq -r '.status')" = "ok"
           test "$(echo "$RT" | jq -r '.errors')" = "0"
+      - name: Agent eval gate (behavior/character, black-box vs candidate)
+        # Runs the gate=True eval subset against the candidate's /simulate (sim fans →
+        # staging, dry-run). Catches character/leak/jailbreak/escalation regressions
+        # BEFORE promote — a nonzero exit fails smoke, so migrate-prod + promote are
+        # skipped and prod stays on the old revision. Needs only httpx (the black-box
+        # runner doesn't import the heavy agent deps).
+        run: |
+          pip install -q httpx
+          CAND_URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
+            --format=json | jq -r '.status.traffic[] | select(.tag=="candidate") | .url')
+          SIM=$(gcloud secrets versions access latest --secret=sim-secret --project "$PROJECT")
+          echo "agent eval gate → $CAND_URL"
+          cd agent && SIM_SECRET="$SIM" python -m evals.run --target blackbox --url "$CAND_URL" --gate
 
   # 3b) Migrate PROD (jenny) — ONLY after the staging-backed candidate passed smoke.
   #     So prod's schema changes only once the exact migration + new code have been
