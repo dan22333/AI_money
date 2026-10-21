@@ -1,112 +1,199 @@
-"""Offline agent eval harness — Phase 1 (deterministic checks, REAL voice model).
+"""Agent eval harness — single/multi-turn, two targets, deterministic checks.
 
-Drives scripted fan messages through the real LangGraph agent and asserts
-deterministic properties of the reply + tool actions:
-  - character/leak: no meta-narration, no AI reveal, no prompt leak (EVERY case)
-  - tone: <=1 emoji, no em-dash (every case unless tone_ok=False)
-  - tool behavior: sent a photo when it should / stayed silent when it shouldn't
-  - flow: the classifier lands the expected mode
+Each case replays its turns (eval plays the FAN) against ONE fan; Jenny answers each;
+checks run per turn. Every reply is also screened for leaks/AI-reveal/prompt-leak,
+phantom sends, and tone — using the SAME agent/sanitize.py the live path uses.
 
-NOT run in PR CI — it calls the paid model and is nondeterministic. Run on demand:
+Targets:
+  --target inprocess  (default)  imports the graph, in-memory store, memory OFF.
+                                  Fast local `make eval`. Runs ALL cases (seeds the
+                                  catalog, can pin the mode).
+  --target blackbox --url URL     POSTs each turn to a deployed /simulate (sim fan →
+                                  staging DB, memory ON). Used for recall + the deploy
+                                  gate. SKIPS cases that need a seeded catalog / forced
+                                  mode (can't control a remote).
+  --gate                          Only run gate=True cases; demote tone to a warning
+                                  (never block a deploy on a flaky tone nit). Critical
+                                  checks (leak/AI/prompt/tool/mode) still fail the gate.
 
-    make eval           # from repo root
-    # or:  cd agent && OPENROUTER_API_KEY=... uv run python -m evals.run
-
-Exit code: 0 = all pass, 1 = failures, 2 = skipped (no API key).
+Exit: 0 all critical checks pass, 1 a critical check failed, 2 skipped (no model/url).
 """
 from __future__ import annotations
 
+import argparse
 import sys
+import uuid
 
-import graph
-import llm  # noqa: F401  (imported so the real voice model is wired; no fake set)
-import modes
 import sanitize
-import store
 from config import settings
 from evals.cases import CASES
 
-MEDIA_ACTIONS = {"teaser", "ppv", "bundle"}
+MEDIA = {"teaser", "ppv", "bundle"}
+PAID = {"ppv", "bundle"}
 
 
-def _seed(catalog):
+# --------------------------------------------------------------------------- drivers
+def _turns(case):
+    if "turns" in case:
+        return case["turns"]
+    return [{"say": case["say"], "expect": case.get("expect", {})}]
+
+
+def _run_inprocess(case):
+    """Drive the case against the in-process graph with the real voice model."""
+    import graph
+    import modes
+    import store
+
     store.reset_memory()
-    for c in catalog:
+    for c in case.get("catalog", []):
         store.add_catalog_item(c["uuid"], c["desc"], c.get("tags", []),
                                heat=c["heat"], suggested_price_cents=c.get("price", 0))
+    fan = "sim:eval-" + uuid.uuid4().hex[:8]
 
-
-def _run_case(case):
-    _seed(case.get("catalog", []))
-    fan = case.get("fan", "sim:eval")
+    orig_classify = modes.classify
+    orig_max = settings.MAX_OFFERS_PER_SESSION
+    if "max_offers" in case:
+        settings.MAX_OFFERS_PER_SESSION = case["max_offers"]
     forced = case.get("force_mode")
-    original = modes.classify
     if forced:
-        modes.classify = lambda msgs, cur, _m=forced: {"mode": _m, "escalate_ok": True, "reason": "forced"}
+        modes.classify = lambda m, c, _f=forced: {"mode": _f, "escalate_ok": True, "reason": "forced"}
     try:
-        out = graph.handle_message(fan, fan, case["say"], dry_run=True)
+        results = []
+        for turn in _turns(case):
+            out = graph.handle_message(fan, fan, turn["say"], dry_run=True)
+            results.append((turn, out.get("reply") or "", out.get("actions") or [], out.get("mode")))
+            for uuid_ in turn.get("buy", []):  # simulate a purchase between turns
+                store.add_purchase(fan, f"evbuy-{uuid_}", gross_cents=5000, source="eval",
+                                   media_uuids=[uuid_])
+        return results
     finally:
-        modes.classify = original
-    return out.get("reply") or "", out.get("actions") or [], out.get("mode")
+        modes.classify = orig_classify
+        settings.MAX_OFFERS_PER_SESSION = orig_max
 
 
-def _check(case, reply, actions, mode):
-    exp = case.get("expect", {})
-    fails = []
+def _run_blackbox(case, url):
+    """Drive the case against a deployed /simulate (sim fan → staging)."""
+    import httpx
 
-    # always-on character / leak guards
+    fan = "sim:eval-" + uuid.uuid4().hex[:8]
+    headers = {"x-sim-secret": settings.SIM_SECRET} if settings.SIM_SECRET else {}
+    results = []
+    for turn in _turns(case):
+        r = httpx.post(f"{url.rstrip('/')}/simulate", headers=headers,
+                       json={"fan_id": fan, "text": turn["say"]}, timeout=60)
+        r.raise_for_status()
+        body = r.json()
+        results.append((turn, body.get("reply") or "", body.get("actions") or [], body.get("mode")))
+    return results
+
+
+# --------------------------------------------------------------------------- checks
+def _check_turn(expect, reply, actions, mode, *, strict):
+    """Return (critical_fails, warns) for one turn's reply."""
+    crit, warn = [], []
+
+    # always-on character / leak guards (critical)
     if sanitize.has_meta_leak(reply):
-        fails.append("meta-narration leak in reply")
+        crit.append("meta-narration leak")
     if sanitize.reveals_ai(reply):
-        fails.append("reveals she's an AI")
+        crit.append("reveals she's an AI")
     if sanitize.reveals_prompt(reply):
-        fails.append("leaks prompt/system text")
-    if exp.get("tone_ok", True):
-        for issue in sanitize.tone_issues(reply):
-            fails.append(f"tone: {issue}")
+        crit.append("leaks prompt text")
 
-    # tool expectations
-    fired = [a for a in actions if a.get("type") in MEDIA_ACTIONS]
-    if exp.get("tool") == "send_media" and not fired:
-        fails.append("expected a media send; none fired")
-    if exp.get("tool") == "none" and fired:
-        fails.append(f"expected NO media send; got {[a.get('type') for a in fired]}")
-    if exp.get("action_type") and not any(a.get("type") == exp["action_type"] for a in fired):
-        fails.append(f"expected action_type={exp['action_type']}; got {[a.get('type') for a in fired]}")
+    fired = [a for a in actions if a.get("type") in MEDIA]
+    # phantom send = implies a send but no media tool fired (MEASUREMENT → warn only)
+    if sanitize.claims_send(reply) and not fired:
+        warn.append("phantom send (implied a photo, no tool fired)")
 
-    # flow / mode
-    if exp.get("mode") and mode != exp["mode"]:
-        fails.append(f"expected mode={exp['mode']}; got {mode}")
-    if exp.get("mode_in") and mode not in exp["mode_in"]:
-        fails.append(f"expected mode in {exp['mode_in']}; got {mode}")
+    # tone: fail in strict local runs, warn in --gate (don't flake deploys)
+    tone = sanitize.tone_issues(reply)
+    (warn if not strict else crit).extend(f"tone: {t}" for t in tone)
 
-    return fails
+    # tool / policy expectations (critical)
+    if expect.get("tool") == "send_media" and not fired:
+        crit.append("expected a media send; none fired")
+    if expect.get("tool") == "none" and fired:
+        crit.append(f"expected NO media send; got {[a['type'] for a in fired]}")
+    if expect.get("action_type") and not any(a.get("type") == expect["action_type"] for a in fired):
+        crit.append(f"expected action_type={expect['action_type']}; got {[a['type'] for a in fired]}")
+    if expect.get("no_paid") and any(a.get("type") in PAID for a in fired):
+        crit.append(f"expected no paid offer; got {[a['type'] for a in fired if a['type'] in PAID]}")
+
+    # mode / flow (critical)
+    if expect.get("mode") and mode != expect["mode"]:
+        crit.append(f"expected mode={expect['mode']}; got {mode}")
+    if expect.get("mode_in") and mode not in expect["mode_in"]:
+        crit.append(f"expected mode in {expect['mode_in']}; got {mode}")
+    if expect.get("mode_not") and mode == expect["mode_not"]:
+        crit.append(f"expected mode != {expect['mode_not']}")
+
+    # content match (critical) — e.g. memory/continuity
+    if expect.get("reply_matches"):
+        import re
+        if not re.search(expect["reply_matches"], reply):
+            crit.append(f"reply did not match /{expect['reply_matches']}/")
+
+    return crit, warn
 
 
-def main():
-    if not settings.OPENROUTER_API_KEY:
-        print("SKIP: evals need the real model — set OPENROUTER_API_KEY.")
+# --------------------------------------------------------------------------- runner
+def _select(cases, target, gate):
+    for case in cases:
+        if gate and not case.get("gate"):
+            continue
+        if target == "blackbox" and (case.get("catalog") is not None or case.get("force_mode")
+                                     or any("buy" in t for t in _turns(case)) or "max_offers" in case):
+            continue  # can't seed/control a remote service
+        yield case
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--target", choices=["inprocess", "blackbox"], default="inprocess")
+    ap.add_argument("--url", default=settings.SERVICE_BASE_URL or "")
+    ap.add_argument("--gate", action="store_true")
+    args = ap.parse_args(argv)
+
+    if args.target == "inprocess" and not settings.OPENROUTER_API_KEY:
+        print("SKIP: in-process evals need the real model — set OPENROUTER_API_KEY.")
+        return 2
+    if args.target == "blackbox" and not args.url:
+        print("SKIP: black-box evals need --url (a deployed /simulate).")
         return 2
 
+    strict = not args.gate  # gate run: tone is a warning, not a failure
+    cases = list(_select(CASES, args.target, args.gate))
     results = []
-    for case in CASES:
+    for case in cases:
         try:
-            reply, actions, mode = _run_case(case)
-            fails = _check(case, reply, actions, mode)
+            turns = (_run_blackbox(case, args.url) if args.target == "blackbox"
+                     else _run_inprocess(case))
+            crit, warn = [], []
+            for i, (turn, reply, actions, mode) in enumerate(turns):
+                c, w = _check_turn(turn.get("expect", {}), reply, actions, mode, strict=strict)
+                crit += [f"turn {i + 1}: {x}" for x in c]
+                warn += [f"turn {i + 1}: {x}" for x in w]
+            last_reply = turns[-1][1] if turns else ""
         except Exception as e:
-            reply, fails = "", [f"ERROR {type(e).__name__}: {e}"]
-        results.append((case, reply, fails))
+            crit, warn, last_reply = [f"ERROR {type(e).__name__}: {e}"], [], ""
+        results.append((case, last_reply, crit, warn))
 
-    passed = sum(1 for _, _, f in results if not f)
+    passed = sum(1 for _, _, c, _ in results if not c)
     failed = len(results) - passed
-    print(f"\n=== AGENT EVAL — {passed} passed, {failed} failed (of {len(results)}) ===\n")
-    for case, reply, fails in results:
-        mark = "PASS" if not fails else "FAIL"
+    nwarn = sum(1 for _, _, _, w in results if w)
+    mode_label = f"{args.target}{' (gate)' if args.gate else ''}"
+    print(f"\n=== AGENT EVAL [{mode_label}] — {passed} passed, {failed} failed, "
+          f"{nwarn} with warnings (of {len(results)}) ===\n")
+    for case, reply, crit, warn in results:
+        mark = "PASS" if not crit else "FAIL"
         print(f"[{mark}] ({case['category']}) {case['name']}")
-        if fails:
-            print(f"       reply: {reply[:140]!r}")
-            for f in fails:
-                print(f"       - {f}")
+        if crit or warn:
+            print(f"       last reply: {reply[:130]!r}")
+        for x in crit:
+            print(f"       ✗ {x}")
+        for x in warn:
+            print(f"       ~ {x}")
     return 0 if failed == 0 else 1
 
 

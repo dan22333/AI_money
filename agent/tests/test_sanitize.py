@@ -39,6 +39,14 @@ def test_detectors():
     assert not sanitize.reveals_prompt("wanna see my new workout?")
 
 
+def test_claims_send_detector():
+    assert sanitize.claims_send("here's me at the beach babe")
+    assert sanitize.claims_send("just sent you something cute")
+    assert sanitize.claims_send("take a peek at what i sent 😏")
+    assert not sanitize.claims_send("how was your day? i trained legs")
+    assert not sanitize.claims_send("you're trouble, tell me more about you")
+
+
 def test_tone_issues():
     assert sanitize.tone_issues("hey babe") == []
     assert sanitize.tone_issues("hi 😏") == []

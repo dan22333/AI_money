@@ -57,6 +57,25 @@ def sanitize_reply(text):
     return cleaned or text
 
 
+# Phrases where the reply CLAIMS/implies a photo or video was just sent. Used by the
+# evals to MEASURE "phantom sends" (text implies a send but no media tool fired) — we
+# deliberately do NOT guard this on the live path yet (latency); the eval reports the
+# rate so we can decide later. Intentionally broad (false positives are fine for a
+# measurement; they'd only over-count).
+_CLAIMS_SEND = re.compile(
+    r"(here'?s (?:a |my |me |you )|sent you|just sent|i sent|check (?:your|out)|"
+    r"take a (?:look|peek)|look what i|here you go|sending (?:you |it )|"
+    r"(?:a|new) (?:pic|photo|video|selfie) for you|attached)",
+    re.IGNORECASE,
+)
+
+
+def claims_send(text) -> bool:
+    """True if the reply reads like Jenny just sent media (used to detect a 'phantom
+    send' when paired with 'no media tool fired this turn')."""
+    return bool(isinstance(text, str) and _CLAIMS_SEND.search(text))
+
+
 def has_meta_leak(text) -> bool:
     return bool(isinstance(text, str) and META_PATTERNS.search(text))
 
