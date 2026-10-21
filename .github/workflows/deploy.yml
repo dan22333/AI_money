@@ -157,12 +157,14 @@ jobs:
     needs: deploy-candidate
     runs-on: ubuntu-latest
     steps:
+      # checkout FIRST — actions/checkout cleans the workspace, which would delete the
+      # credential file google-github-actions/auth writes there if it ran afterward.
+      - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
       - uses: google-github-actions/setup-gcloud@v2
-      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
