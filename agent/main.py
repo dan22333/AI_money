@@ -136,6 +136,50 @@ def process_fan(inp: ProcessFanIn, request: Request,
     return debounce.process_fan(inp.fan_id, inp.user_uuid or inp.fan_id, is_retry=is_retry)
 
 
+class WelcomeFanIn(BaseModel):
+    fan_id: str
+    user_uuid: str = ""
+
+
+@app.post("/admin/welcome_fan")
+def welcome_fan(inp: WelcomeFanIn, x_sim_secret: str | None = Header(default=None)):
+    """Cloud Tasks worker: send a brand-new follower ONE proactive welcome DM, ~5 min
+    after they followed (the follow webhook enqueued this). Same sim-secret guard as
+    the other /admin routes. Idempotent + conversation-aware:
+      - already welcomed (fan.welcomedAt set) → no-op.
+      - fan already started talking (any inbound message in the delay window) → skip
+        the canned hi and let the real conversation lead; still stamp welcomedAt.
+      - otherwise → send the verbatim opener (recorded in the thread) and stamp it.
+    Returns 2xx on success/skip; a send failure raises → non-2xx → Cloud Tasks retries
+    (the welcomedAt guard prevents a double-hi on the retry)."""
+    if settings.SIM_SECRET and x_sim_secret != settings.SIM_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    import graph
+    import store
+    fan_id = inp.fan_id
+    user_uuid = inp.user_uuid or fan_id
+    store.use_namespace_for(fan_id)
+    fan = store.get_fan(fan_id)
+    if fan.get("welcomedAt"):
+        return {"status": "already_welcomed"}
+    # "Already talking?" — any inbound fan message means they engaged first.
+    talking = any(m.get("role") == "fan" for m in store.recent_messages(fan_id, limit=10))
+    if talking:
+        fan["welcomedAt"] = store._now().isoformat()
+        fan["welcomeOutcome"] = "skipped_talking"
+        store.save_fan(fan)
+        return {"status": "skipped_talking"}
+    # sim: fans have no real Fanvue chat → dry-run (record into staging, no live send),
+    # so the smoke test can exercise this route without messaging anyone.
+    dry = fan_id.startswith("sim:")
+    out = graph.deliver_welcome(fan_id, user_uuid, settings.WELCOME_MESSAGE, dry_run=dry)
+    fan = store.get_fan(fan_id)  # re-read: deliver_welcome recorded the reply
+    fan["welcomedAt"] = store._now().isoformat()
+    fan["welcomeOutcome"] = "sent"
+    store.save_fan(fan)
+    return {"status": "welcomed", "sent": bool(out.get("sent")), "dry": dry}
+
+
 class ExtractMemoryIn(BaseModel):
     fan_id: str
     incoming: str = ""

@@ -13,6 +13,16 @@ import tasks
 from config import settings
 
 
+def _maybe_welcome(fan_id: str) -> None:
+    """Enqueue a delayed proactive welcome DM for a brand-new follower. No-op unless
+    the feature is on and the queue is wired up; enqueue itself is idempotent (named
+    task) and the handler skips if the fan already started talking. Only called for a
+    GENUINELY new follow (mark_followed returned True) on the real-time webhook path —
+    never from reconcile, so flipping WELCOME_ENABLED on won't blast existing fans."""
+    if settings.WELCOME_ENABLED:
+        tasks.enqueue_welcome_fan(fan_id, fan_id, settings.WELCOME_DELAY_SECONDS)
+
+
 def already_processed(event_id: Optional[str]) -> bool:
     """Durable, cross-instance dedup via store.claim_event (Firestore atomic
     create in prod). Returns True if this event was already handled.
@@ -130,8 +140,47 @@ def handle_event(event: dict, *, dry_run: bool = False, proactive_on_purchase: b
         if fan:
             store.use_namespace_for(fan)
             f = store.get_fan(fan)
-            store.mark_followed(f, source="webhook")  # also sets isFollower (was missing)
+            newly = store.mark_followed(f, source="webhook")  # also sets isFollower
             store.save_fan(f)
+            if newly and not dry_run:
+                _maybe_welcome(fan)
         return {"status": "follower_added"}
 
+    # FLAT, typeless lifecycle events. Just like legacy messages, Fanvue delivers
+    # follow/subscription notifications as FLAT payloads with NO `type` field —
+    # a `sender` (the fan) acting on `recipientUuid` (Jenny), no `message`, no
+    # read counters. The enveloped branches above only fire on an explicit
+    # `type`, so these fell straight through to "ignored" and we lost every
+    # real-time new-fan event (only the nightly reconcile caught them, ~hours
+    # late). Verified live shape (2026-11-01, fan billiamj's follow):
+    # {recipientUuid, sender, timestamp, eventId}.
+    #
+    # We can't always tell follow vs subscription apart from keys alone, and the
+    # nightly reconcile is the system-of-record for status (it diffs the full
+    # /v1/followers + /v1/subscribers lists and downgrades anyone absent), so a
+    # mislabel here self-heals within 24h. Recording the fan + marking followed
+    # is therefore the safe, strictly-better-than-dropping choice.
+    if not etype and isinstance(data, dict):
+        sender = data.get("sender") or {}
+        if not isinstance(sender, dict):
+            sender = {}
+        fan = (sender.get("uuid") or sender.get("userUuid") or sender.get("id")
+               or data.get("senderUuid"))
+        is_read = "readMessagesCount" in data or "counterpartUuid" in data
+        if fan and not is_read and "message" not in data:
+            store.use_namespace_for(fan)
+            f = store.get_fan(fan)
+            newly = store.mark_followed(f, source="webhook")
+            store.save_fan(f)
+            if newly and not dry_run:
+                _maybe_welcome(fan)
+            print(f"[webhook] flat lifecycle event → recorded fan={fan!r} "
+                  f"newly_followed={newly} top_keys={list(event.keys())}")
+            return {"status": "follower_added", "fan": fan, "inferred_flat": True}
+
+    # Genuinely unrecognized shape — log loudly so a dropped event is diagnosable
+    # (and alertable) instead of silently vanishing like billiamj's did.
+    print(f"[webhook] IGNORED unrecognized shape: type={etype!r} "
+          f"top_keys={list(event.keys())} "
+          f"data_keys={list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
     return {"status": "ignored", "type": etype}
