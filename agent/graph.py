@@ -405,6 +405,19 @@ def handle_message(fan_id: str, user_uuid: str, text: str, *,
     return {"reply": final, "mode": result.get("mode"), "actions": actions}
 
 
+def deliver_welcome(fan_id: str, user_uuid: str, text: str, *, dry_run: bool = False) -> dict:
+    """Send a fixed proactive welcome DM to a brand-new follower and RECORD it in the
+    fan's message thread (as a `jenny` message, keyed by the send API's messageUuid
+    so the nightly reconcile re-pull dedups it). No LLM call — the opener is verbatim,
+    so a cold first touch can't drift or add a pitch. learn=False: there's no fan turn
+    to extract memory from. strict_send (real sends): on a delivery failure, re-raise
+    so the Cloud Tasks job retries instead of marking the fan welcomed."""
+    store.use_namespace_for(fan_id)
+    return _deliver_and_record(fan_id, user_uuid, text, [], mode="WARM",
+                               session_id="", memory_incoming="",
+                               dry_run=dry_run, strict_send=not dry_run, learn=False)
+
+
 def handle_batch(fan_id: str, user_uuid: str, through_ts: str, batch_text: str) -> dict:
     """Debounce worker generation: answer the fan's unanswered batch (already stored
     in history, up to `through_ts`) with ONE reply, then send + record it. Always

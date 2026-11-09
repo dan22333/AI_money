@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 import graph
 import main
 import router
+import store
 from config import settings
 
 client = TestClient(main.app)
@@ -119,3 +120,42 @@ def test_admin_fan_thread_auth_and_shape(monkeypatch):
     body = r.json()
     assert body["count"] == 2
     assert [m["role"] for m in body["messages"]] == ["fan", "jenny"]
+
+
+# -------- proactive welcome DM (/admin/welcome_fan) --------
+
+def test_welcome_fan_requires_sim_secret(monkeypatch):
+    monkeypatch.setattr(settings, "SIM_SECRET", "topsecret")
+    assert client.post("/admin/welcome_fan", json={"fan_id": "sim:w"}).status_code == 401
+
+
+def test_welcome_fan_sends_and_records_in_thread(monkeypatch):
+    """A fresh follower with no prior messages gets the verbatim opener, and it's
+    RECORDED in their thread as a jenny message (sim fan → dry send, no network)."""
+    monkeypatch.setattr(settings, "SIM_SECRET", "")  # open in dev
+    monkeypatch.setattr(settings, "WELCOME_MESSAGE", "heyy ty for the follow!")
+    r = client.post("/admin/welcome_fan", json={"fan_id": "sim:fresh"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "welcomed"
+    # the opener is registered in the user's message history
+    msgs = store.recent_messages("sim:fresh", limit=10)
+    assert any(m["role"] == "jenny" and m["text"] == "heyy ty for the follow!" for m in msgs)
+    assert store.get_fan("sim:fresh").get("welcomedAt")
+
+
+def test_welcome_fan_is_idempotent(monkeypatch):
+    monkeypatch.setattr(settings, "SIM_SECRET", "")
+    assert client.post("/admin/welcome_fan", json={"fan_id": "sim:once"}).json()["status"] == "welcomed"
+    assert client.post("/admin/welcome_fan", json={"fan_id": "sim:once"}).json()["status"] == "already_welcomed"
+
+
+def test_welcome_fan_skips_if_already_talking(monkeypatch):
+    """If the fan messaged first (inbound exists), skip the canned hi."""
+    monkeypatch.setattr(settings, "SIM_SECRET", "")
+    store.save_message("sim:chatty", "fan", "hey jenny!!", via="webhook")
+    r = client.post("/admin/welcome_fan", json={"fan_id": "sim:chatty"})
+    assert r.json()["status"] == "skipped_talking"
+    # no canned opener was appended
+    msgs = store.recent_messages("sim:chatty", limit=10)
+    assert all(m["role"] != "jenny" for m in msgs)

@@ -133,6 +133,12 @@ jobs:
           # RECALL_EXPAND_EVERY turns — rich recall periodically without paying its
           # ~2-4s latency every message. (expanded-every-turn was the main latency cost.)
           ENVS="${ENVS},MEMORY_USE_HNSW=true,MEMORY_PG_MINCONN=1,MEMORY_PG_MAXCONN=5,MEMORY_FANOUT_ENABLED=true,EXTRACT_TASKS_QUEUE=jenny-extract,RECALL_STRATEGY=adaptive,RECALL_EXPAND_EVERY=5"
+          # Proactive welcome DM to brand-new followers — LIVE (2026-11-09). A real-time
+          # follow webhook enqueues a delayed /admin/welcome_fan (reuses the jenny-process
+          # queue) that sends ONE warm opener ~5min later, skipped if the fan messaged
+          # first. Only the webhook path triggers it (never reconcile), so existing
+          # followers are never blasted. Flip WELCOME_ENABLED=false to disable (no redeploy).
+          ENVS="${ENVS},WELCOME_ENABLED=true,WELCOME_DELAY_SECONDS=300,WELCOME_TASKS_QUEUE=jenny-process"
           if gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" >/dev/null 2>&1; then
             NO_TRAFFIC="--no-traffic"
             echo "Service exists → candidate at 0% traffic."
@@ -200,6 +206,13 @@ jobs:
             -H "content-type: application/json" -d '{"fan_id":"sim:smoke"}' | jq -r '.status')
           echo "process_fan status: $PF"
           test "$PF" = "nothing"
+          #  - the proactive welcome worker must respond; a fresh sim fan → a dry,
+          #    staging-only send ("welcomed"), so a broken welcome route fails the
+          #    canary before any real follower could be messaged
+          WEL=$(curl -fsS -X POST "$CAND_URL/admin/welcome_fan" -H "x-sim-secret: $SIM" \
+            -H "content-type: application/json" -d '{"fan_id":"sim:welcome_smoke"}' | jq -r '.status')
+          echo "welcome_fan status: $WEL"
+          test "$WEL" = "welcomed"
           #  - the extraction fan-out worker must respond; a sim fan + trivial turn is
           #    a safe learn into the STAGING memory collection
           EX=$(curl -fsS -X POST "$CAND_URL/admin/extract_memory" -H "x-sim-secret: $SIM" \

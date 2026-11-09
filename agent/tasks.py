@@ -32,10 +32,16 @@ def fanout_enabled() -> bool:
     return bool(settings.MEMORY_FANOUT_ENABLED and _can_enqueue(settings.EXTRACT_TASKS_QUEUE))
 
 
-def _enqueue(queue: str, path: str, body: dict, delay_seconds: float = 0.0) -> bool:
+def _enqueue(queue: str, path: str, body: dict, delay_seconds: float = 0.0,
+             name: str | None = None) -> bool:
     """Create one Cloud Tasks HTTP job: POST `path` on our own service with `body`,
     ~delay_seconds from now. Returns True if enqueued, False on any failure (caller
-    falls back to inline). Never raises."""
+    falls back to inline). Never raises.
+
+    `name` is an optional dedup id: Cloud Tasks rejects a second task with the same
+    name for ~1h after the first completes, so a redelivered webhook can't schedule
+    the job twice. AlreadyExists is therefore a SUCCESS (the job is already queued),
+    not a failure."""
     try:
         from google.cloud import tasks_v2
         from google.protobuf import timestamp_pb2
@@ -58,14 +64,22 @@ def _enqueue(queue: str, path: str, body: dict, delay_seconds: float = 0.0) -> b
             # lock the endpoints down to this SA later without code changes).
             http_request["oidc_token"] = {"service_account_email": settings.TASKS_INVOKER_SA}
         task: dict = {"http_request": http_request}
+        if name:
+            task["name"] = client.task_path(settings.GCP_PROJECT, settings.TASKS_LOCATION,
+                                            queue, name)
         if delay_seconds and delay_seconds > 0:
             import time
             ts = timestamp_pb2.Timestamp()
             ts.FromSeconds(int(time.time() + delay_seconds))
             task["schedule_time"] = ts
-        # No task name (dedup id): extra tasks are harmless — they find nothing to
-        # do and no-op (debounce) / re-run idempotent extraction (fan-out).
-        client.create_task(request={"parent": parent, "task": task})
+        try:
+            client.create_task(request={"parent": parent, "task": task})
+        except Exception as e:
+            # A named task that already exists means it's already queued → dedup win.
+            if type(e).__name__ == "AlreadyExists":
+                print(f"[tasks] {name} already queued (dedup) — skipping")
+                return True
+            raise
         return True
     except Exception as e:  # pragma: no cover - infra failure path
         print(f"[tasks] enqueue to {queue}{path} failed ({type(e).__name__}: {e})")
@@ -79,6 +93,25 @@ def enqueue_process_fan(fan_id: str, user_uuid: str, delay_seconds: float) -> bo
         return False
     return _enqueue(settings.TASKS_QUEUE, "/admin/process_fan",
                     {"fan_id": fan_id, "user_uuid": user_uuid}, delay_seconds)
+
+
+def welcome_enabled() -> bool:
+    """True only if the proactive welcome is on and its queue is wired up."""
+    return bool(settings.WELCOME_ENABLED and _can_enqueue(settings.WELCOME_TASKS_QUEUE))
+
+
+def enqueue_welcome_fan(fan_id: str, user_uuid: str, delay_seconds: float) -> bool:
+    """Schedule a /admin/welcome_fan POST for this brand-new follower ~delay_seconds
+    from now. Deduped by a deterministic task name so a redelivered follow webhook
+    can't queue two welcomes. Returns False if the welcome feature isn't wired up."""
+    if not welcome_enabled():
+        return False
+    import re
+    # Task names allow only [A-Za-z0-9_-]; fan uuids are fine, but a "sim:" prefix
+    # (or any stray char) would be rejected — sanitize to be safe.
+    name = "welcome-" + re.sub(r"[^A-Za-z0-9_-]", "-", fan_id)
+    return _enqueue(settings.WELCOME_TASKS_QUEUE, "/admin/welcome_fan",
+                    {"fan_id": fan_id, "user_uuid": user_uuid}, delay_seconds, name=name)
 
 
 def enqueue_extract_memory(fan_id: str, incoming: str, final: str) -> bool:

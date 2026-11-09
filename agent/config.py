@@ -185,5 +185,23 @@ class Settings:
     SERVICE_BASE_URL = os.environ.get("SERVICE_BASE_URL", "")
     TASKS_INVOKER_SA = os.environ.get("TASKS_INVOKER_SA", "")
 
+    # --- Proactive welcome DM to brand-new followers --------------------------
+    # OFF by default (dark-launch): when true, a NEW follow (detected in real time
+    # by the follow webhook) enqueues a delayed Cloud Tasks job (/admin/welcome_fan)
+    # that sends ONE warm first DM — UNLESS the fan already started talking in the
+    # meantime (then it's skipped). Idempotent via the fan's `welcomedAt` flag.
+    # Only the webhook path triggers it (never the nightly reconcile), so flipping
+    # this on won't blast existing followers. Reuses the debounce queue by default.
+    WELCOME_ENABLED = os.environ.get("WELCOME_ENABLED", "false").lower() == "true"
+    # Delay before the welcome fires. Also the window in which "fan messaged first"
+    # can resolve → we skip the canned hi and let the real conversation lead.
+    WELCOME_DELAY_SECONDS = float(os.environ.get("WELCOME_DELAY_SECONDS", "300"))
+    # The exact opener. Sent verbatim (deterministic — no LLM call on a cold first
+    # touch, so it can never drift or add a pitch). Override via env to A/B it.
+    WELCOME_MESSAGE = os.environ.get(
+        "WELCOME_MESSAGE",
+        "heyy just saw you followed me ty! how'd you find my page?")
+    WELCOME_TASKS_QUEUE = os.environ.get("WELCOME_TASKS_QUEUE", "jenny-process")
+
 
 settings = Settings()
