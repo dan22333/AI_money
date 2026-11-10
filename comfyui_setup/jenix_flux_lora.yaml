@@ -1,0 +1,62 @@
+---
+job: extension
+config:
+  name: "jenix_flux_lora"
+  process:
+    - type: "sd_trainer"
+      training_folder: "/opt/comfy/ai-toolkit/output"
+      device: cuda:0
+      trigger_word: "jenix"
+      network:
+        type: "lora"
+        linear: 16
+        linear_alpha: 16
+      save:
+        dtype: float16
+        save_every: 250
+        max_step_saves_to_keep: 4
+        push_to_hub: false
+      datasets:
+        - folder_path: "/opt/comfy/jenny_dataset"
+          caption_ext: "txt"
+          caption_dropout_rate: 0.05
+          shuffle_tokens: false
+          cache_latents_to_disk: true
+          resolution: [ 512, 768, 1024 ]
+      train:
+        batch_size: 1
+        steps: 2500
+        gradient_accumulation_steps: 1
+        train_unet: true
+        train_text_encoder: false
+        gradient_checkpointing: true
+        noise_scheduler: "flowmatch"
+        optimizer: "adamw8bit"
+        lr: 1e-4
+        ema_config:
+          use_ema: true
+          ema_decay: 0.99
+        dtype: bf16
+      model:
+        name_or_path: "black-forest-labs/FLUX.1-dev"
+        is_flux: true
+        quantize: true
+      sample:
+        sampler: "flowmatch"
+        sample_every: 250
+        sample_start_step: 0
+        width: 896
+        height: 1152
+        prompts:
+          - "jenix woman, portrait, natural window light, kodak portra 400, muted colors, film grain"
+          - "jenix woman, standing on a city street, candid photo, overcast day"
+          - "jenix woman, in a cafe holding a coffee cup, cozy sweater, bokeh background"
+          - "jenix woman, full body, summer dress, golden hour, beach"
+        neg: ""
+        seed: 42
+        walk_seed: true
+        guidance_scale: 4
+        sample_steps: 20
+meta:
+  name: "[name]"
+  version: "1.0"

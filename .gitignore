@@ -28,5 +28,14 @@ venv/
 *.tfplan
 crash.log
 
+# Generated media
+output/
+*.mp4
+*.png
+*.jpg
+*.jpeg
+*.webp
+jenny/reference_images/
+
 # OS
 .DS_Store
